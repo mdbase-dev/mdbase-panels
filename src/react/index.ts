@@ -8,4 +8,4 @@ export {
 } from "./Workspace.js";
 export { type MenuItem } from "./Menu.js";
 export { type FlipOptions } from "./flip.js";
-export { useWorkspaceState } from "./hooks.js";
+export { useLeader, useWorkspaceState } from "./hooks.js";

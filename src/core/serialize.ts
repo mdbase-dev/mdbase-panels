@@ -2,11 +2,14 @@ import { normalize } from "./normalize.js";
 import { emptyWorkspace } from "./tree.js";
 import {
   edgeSides,
+  type Camera,
+  type CanvasFrame,
   type EdgeRegion,
   type LayoutNode,
   type PanelData,
   type PanelDescriptor,
   type StackNode,
+  viewModes,
   type WorkspaceState,
 } from "./types.js";
 
@@ -59,8 +62,10 @@ export function fromSnapshot(value: unknown): WorkspaceState {
     edges,
     focus: typeof input["focus"] === "string" ? input["focus"] : null,
     maximized: typeof input["maximized"] === "string" ? input["maximized"] : null,
-    view: input["view"] === "columns" ? "columns" : "tiling",
+    view: viewModes.find((view) => view === input["view"]) ?? "tiling",
     columns,
+    canvas: parseCanvas(input["canvas"]),
+    leader: typeof input["leader"] === "string" ? input["leader"] : null,
     seq: typeof seq === "number" && Number.isSafeInteger(seq) && seq > 0 ? seq : 1,
   });
 }
@@ -77,6 +82,7 @@ function parsePanel(value: unknown, id: string): PanelDescriptor {
     ...(value["data"] === undefined ? {} : { data: parseData(value["data"], 0) }),
     ...(isSize(value["minWidth"]) ? { minWidth: value["minWidth"] } : {}),
     ...(isSize(value["minHeight"]) ? { minHeight: value["minHeight"] } : {}),
+    ...(typeof value["leads"] === "boolean" ? { leads: value["leads"] } : {}),
   };
 }
 
@@ -165,6 +171,35 @@ function parseEdge(value: unknown): EdgeRegion {
     ...(typeof value["priority"] === "number" && Number.isFinite(value["priority"])
       ? { priority: value["priority"] }
       : {}),
+  };
+}
+
+/** Anything unreadable is dropped; normalization gives stacks without a frame a new one. */
+function parseCanvas(value: unknown): { frames: { [stack: string]: CanvasFrame }; camera: Camera } {
+  const number = (input: unknown, fallback: number): number =>
+    typeof input === "number" && Number.isFinite(input) ? input : fallback;
+  const frames: { [stack: string]: CanvasFrame } = {};
+  const given = isRecord(value) ? value["frames"] : undefined;
+  if (isRecord(given)) {
+    for (const [id, frame] of Object.entries(given)) {
+      if (
+        isRecord(frame) &&
+        ["x", "y", "width", "height"].every((key) => typeof frame[key] === "number")
+      ) {
+        frames[id] = {
+          x: number(frame["x"], 0),
+          y: number(frame["y"], 0),
+          width: number(frame["width"], 0),
+          height: number(frame["height"], 0),
+          z: number(frame["z"], 0),
+        };
+      }
+    }
+  }
+  const camera = isRecord(value) && isRecord(value["camera"]) ? value["camera"] : {};
+  return {
+    frames,
+    camera: { x: number(camera["x"], 0), y: number(camera["y"], 0), zoom: number(camera["zoom"], 1) },
   };
 }
 

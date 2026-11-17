@@ -1,9 +1,13 @@
-import { allStacks, mainStacks, normalizeSizes } from "./tree.js";
+import { canvasDefaults, clampCamera, frameBeside } from "./canvas.js";
+import { allStacks, findStack, mainStacks, normalizeSizes } from "./tree.js";
 import {
   edgeSides,
+  type CanvasFrame,
+  type CanvasState,
   type EdgeRegion,
   type EdgeSide,
   type LayoutNode,
+  type NodeId,
   type PanelDescriptor,
   type PanelId,
   type StackNode,
@@ -17,7 +21,10 @@ export const columnFractionRange = { min: 0.15, max: 1 } as const;
  * - every panel descriptor is placed in exactly one stack, and every placed id has a descriptor;
  * - the main area has no empty stacks, no single-child splits and no nested same-direction splits;
  * - split sizes are positive and sum to 1;
- * - `active`, `focus` and `maximized` refer to things that exist.
+ * - `active`, `focus` and `maximized` refer to things that exist;
+ * - `leader` is a panel that can lead, and is the focused panel whenever that one can lead;
+ * - canvas frames belong to main-area stacks, and in the `canvas` view every main-area stack
+ *   has one, with the focused stack in front.
  * Normalizing a canonical state returns the same object.
  */
 export function normalize(state: WorkspaceState): WorkspaceState {
@@ -115,6 +122,9 @@ export function normalize(state: WorkspaceState): WorkspaceState {
     : (main[0]?.id ?? visibleEdgeStack(draft)?.id ?? everything.find((s) => s.panels.length)?.id ?? null);
   const maximized = main.some(({ id }) => id === state.maximized) ? state.maximized : null;
   const columns = cleanColumns(state, root);
+  const placed: WorkspaceState = { ...draft, focus };
+  const canvas = cleanCanvas(placed);
+  const leader = cleanLeader(placed);
 
   if (
     root === state.root &&
@@ -122,11 +132,13 @@ export function normalize(state: WorkspaceState): WorkspaceState {
     panels === state.panels &&
     focus === state.focus &&
     maximized === state.maximized &&
-    columns === state.columns
+    columns === state.columns &&
+    canvas === state.canvas &&
+    leader === state.leader
   ) {
     return state;
   }
-  return { ...state, root, edges, panels, focus, maximized, columns };
+  return { ...state, root, edges, panels, focus, maximized, columns, canvas, leader };
 }
 
 function cleanEdge(
@@ -174,4 +186,77 @@ function cleanColumns(state: WorkspaceState, root: LayoutNode | null): Workspace
 
 function nodeIds(node: LayoutNode): string[] {
   return node.type === "stack" ? [node.id] : [node.id, ...node.children.flatMap(nodeIds)];
+}
+
+function leads(state: WorkspaceState, id: PanelId | null | undefined): id is PanelId {
+  return typeof id === "string" && Object.hasOwn(state.panels, id) && state.panels[id]?.leads !== false;
+}
+
+/** The focused panel if it can lead, else whoever led before, else the first panel that can. */
+function cleanLeader(state: WorkspaceState): PanelId | null {
+  const focused = findStack(state, state.focus)?.active;
+  if (leads(state, focused)) {
+    return focused;
+  }
+  if (leads(state, state.leader)) {
+    return state.leader;
+  }
+  const stacks = allStacks(state);
+  return (
+    stacks.map(({ active }) => active).find((id) => leads(state, id)) ??
+    stacks.flatMap(({ panels }) => panels).find((id) => leads(state, id)) ??
+    null
+  );
+}
+
+function cleanCanvas(state: WorkspaceState): CanvasState {
+  const current = state.canvas;
+  const main = mainStacks(state);
+  const live = new Set(main.map(({ id }) => id));
+  let changed = false;
+  const frames: { [stack: NodeId]: CanvasFrame } = {};
+  for (const [id, frame] of Object.entries(current.frames)) {
+    const usable =
+      live.has(id) &&
+      [frame.x, frame.y, frame.width, frame.height, frame.z].every((value) => Number.isFinite(value)) &&
+      frame.width > 0 &&
+      frame.height > 0;
+    if (usable) {
+      frames[id] = frame;
+    } else {
+      changed = true;
+    }
+  }
+  if (state.view === "canvas") {
+    let top = Object.values(frames).reduce<CanvasFrame | undefined>(
+      (best, frame) => (!best || frame.z > best.z ? frame : best),
+      undefined,
+    );
+    for (const { id } of main) {
+      if (frames[id]) {
+        continue;
+      }
+      // A stack with no place yet goes beside whatever was used last, the same size.
+      const size = top ? { width: top.width, height: top.height } : canvasDefaults.frame;
+      const rect = top
+        ? frameBeside(Object.values(frames), top, "right", size)
+        : { x: canvasDefaults.gap, y: canvasDefaults.gap, ...size };
+      top = { ...rect, z: (top?.z ?? 0) + 1 };
+      frames[id] = top;
+      changed = true;
+    }
+    const focused = state.focus === null ? undefined : frames[state.focus];
+    if (focused && state.focus !== null) {
+      const others = Object.entries(frames)
+        .filter(([id]) => id !== state.focus)
+        .map(([, frame]) => frame.z);
+      const highest = Math.max(0, ...others);
+      if (focused.z <= highest) {
+        frames[state.focus] = { ...focused, z: highest + 1 };
+        changed = true;
+      }
+    }
+  }
+  const camera = clampCamera(current.camera);
+  return changed || camera !== current.camera ? { frames: changed ? frames : current.frames, camera } : current;
 }

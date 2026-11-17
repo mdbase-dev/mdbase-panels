@@ -43,7 +43,7 @@ export interface StoreOptions {
   readonly saveDelay?: number;
 }
 
-const quiet = new Set<Operation["type"]>(["activate", "focus"]);
+const quiet = new Set<Operation["type"]>(["activate", "focus", "setCamera"]);
 
 /** Holds a workspace, applies operations to it, and tells subscribers. */
 export class WorkspaceStore {
@@ -141,7 +141,9 @@ export class WorkspaceStore {
     }
     this.open = false;
     const previous = this.current;
-    const target = rebase ? normalize(rebase(saved, previous)) : saved;
+    // Where the canvas is looking is not something to undo, any more than a scroll position is.
+    const kept = { ...saved, canvas: { ...saved.canvas, camera: previous.canvas.camera } };
+    const target = normalize(rebase ? rebase(kept, previous) : kept);
     to.push(previous);
     this.commit(target, previous, { type: "load", state: target }, true);
     return true;

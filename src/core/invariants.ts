@@ -72,5 +72,33 @@ export function violations(state: WorkspaceState): string[] {
   if (state.maximized !== null && !main.some(({ id }) => id === state.maximized)) {
     problems.push("maximized refers to a missing main stack");
   }
+  if (state.leader !== null && state.panels[state.leader]?.leads === false) {
+    problems.push("the leader is a panel that does not lead");
+  }
+  if (state.leader !== null && !Object.hasOwn(state.panels, state.leader)) {
+    problems.push("the leader refers to a missing panel");
+  }
+  const focused = stacks.find(({ id }) => id === state.focus)?.active;
+  if (focused && state.panels[focused]?.leads !== false && state.leader !== focused) {
+    problems.push("the focused panel can lead but is not the leader");
+  }
+  for (const id of Object.keys(state.canvas.frames)) {
+    if (!main.some((stack) => stack.id === id)) {
+      problems.push(`canvas frame ${id} has no main stack`);
+    }
+  }
+  if (state.view === "canvas") {
+    for (const { id } of main) {
+      const frame = state.canvas.frames[id];
+      if (!frame) {
+        problems.push(`main stack ${id} has no canvas frame`);
+      } else if (
+        id === state.focus &&
+        Object.entries(state.canvas.frames).some(([other, { z }]) => other !== id && z >= frame.z)
+      ) {
+        problems.push("the focused stack is not in front");
+      }
+    }
+  }
   return problems;
 }

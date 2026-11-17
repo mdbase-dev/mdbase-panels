@@ -1,5 +1,6 @@
 import { findStack, mainStacks } from "./tree.js";
 import {
+  type Camera,
   type EdgeSide,
   type LayoutNode,
   type NodeId,
@@ -10,7 +11,7 @@ import {
   type WorkspaceState,
 } from "./types.js";
 
-export type LayoutMode = "tiling" | "columns" | "stack" | "overview";
+export type LayoutMode = "tiling" | "columns" | "canvas" | "stack" | "overview";
 
 export interface LayoutOptions {
   /** Below this workspace width one panel is shown at a time. 0 disables it. */
@@ -34,6 +35,16 @@ export interface LayoutOptions {
   /** Space around and between overview cards, and the height of each card's label. */
   readonly overviewGap?: number;
   readonly overviewLabelHeight?: number;
+  /**
+   * Edge regions to leave out for now, whatever their `visible` says. This is how an app hides
+   * a region for a passing reason (a reading mode, say) without forgetting what the user wants.
+   */
+  readonly hiddenEdges?: readonly EdgeSide[];
+  /**
+   * When there is not room for every region, this one is the last to give way, ahead of
+   * priorities. An app sets it to the region the user asked for most recently.
+   */
+  readonly preferEdge?: EdgeSide | null;
 }
 
 const defaults = {
@@ -50,6 +61,8 @@ const defaults = {
   overview: false,
   overviewGap: 24,
   overviewLabelHeight: 28,
+  hiddenEdges: [] as readonly EdgeSide[],
+  preferEdge: null as EdgeSide | null,
 } satisfies Required<LayoutOptions>;
 
 export interface StackLayout {
@@ -59,9 +72,15 @@ export interface StackLayout {
   readonly rect: Rect;
   readonly header: Rect;
   readonly body: Rect;
-  /** Pinned things stay put when the main area scrolls sideways. */
+  /**
+   * Pinned things are placed in the viewport and stay put. Everything else moves with the main
+   * area: it scrolls sideways in the `columns` view, and in the `canvas` view its box is in
+   * plane pixels, to be drawn through `WorkspaceLayout.camera`.
+   */
   readonly pinned: boolean;
   readonly focused: boolean;
+  /** Drawing order on the canvas, from 1 at the back. 0 everywhere else. */
+  readonly layer: number;
 }
 
 export interface PanelLayout {
@@ -73,6 +92,7 @@ export interface PanelLayout {
   /** 1 except in the overview. */
   readonly scale: number;
   readonly pinned: boolean;
+  readonly layer: number;
 }
 
 export type SplitterLayout = {
@@ -126,6 +146,8 @@ export interface WorkspaceLayout {
   readonly cards: readonly OverviewCard[];
   /** Edge regions that gave way because the workspace is too small. */
   readonly yielded: readonly EdgeSide[];
+  /** In the `canvas` mode, the camera that unpinned boxes are drawn through. Null otherwise. */
+  readonly camera: Camera | null;
 }
 
 interface Context {
@@ -167,6 +189,8 @@ export function computeLayout(
     if (state.root) {
       if (state.view === "columns") {
         contentWidth = layoutColumns(context, state.root, main, viewport);
+      } else if (state.view === "canvas") {
+        layoutCanvas(context);
       } else {
         layoutNode(context, state.root, main);
       }
@@ -187,6 +211,7 @@ export function computeLayout(
     splitters: context.splitters,
     cards: [],
     yielded,
+    camera: mode === "canvas" ? state.canvas.camera : null,
   };
 }
 
@@ -201,6 +226,7 @@ function placeStack(
   edge: EdgeSide | null,
   pinned: boolean,
   headerHeight = context.options.headerHeight,
+  layer = 0,
 ): void {
   const head = Math.min(headerHeight, rect.height);
   const header: Rect = { x: rect.x, y: rect.y, width: rect.width, height: head };
@@ -213,6 +239,7 @@ function placeStack(
     body,
     pinned,
     focused: context.state.focus === stack.id,
+    layer,
   });
   for (const id of stack.panels) {
     context.panels.push({
@@ -222,7 +249,33 @@ function placeStack(
       visible: stack.active === id,
       scale: 1,
       pinned,
+      layer,
     });
+  }
+}
+
+/**
+ * Every main-area stack where its frame says, in plane pixels. Stacks keep their tree order
+ * (so a view never has to reorder anything to raise a pane); `layer` says what is in front.
+ */
+function layoutCanvas(context: Context): void {
+  const { state } = context;
+  const stacks = mainStacks(state);
+  const back = stacks
+    .flatMap(({ id }) => (state.canvas.frames[id] ? [id] : []))
+    .sort((a, b) => (state.canvas.frames[a]?.z ?? 0) - (state.canvas.frames[b]?.z ?? 0));
+  for (const stack of stacks) {
+    const frame = state.canvas.frames[stack.id];
+    if (!frame) {
+      continue;
+    }
+    const rect: Rect = {
+      x: Math.round(frame.x),
+      y: Math.round(frame.y),
+      width: Math.round(frame.width),
+      height: Math.round(frame.height),
+    };
+    placeStack(context, stack, rect, null, false, context.options.headerHeight, back.indexOf(stack.id) + 1);
   }
 }
 
@@ -241,24 +294,37 @@ function layoutCompact(context: Context, viewport: Rect): void {
 /** Panels that are not on screen keep a sensible box, so their content never lays out at zero. */
 function hideUnplaced(context: Context, viewport: Rect): void {
   const placed = new Set(context.panels.map(({ id }) => id));
-  const { state } = context;
-  const add = (stack: StackNode): void => {
+  const { state, options } = context;
+  const add = (stack: StackNode, rect: Rect): void => {
     for (const id of stack.panels) {
       if (!placed.has(id)) {
         context.panels.push({
           id,
           stack: stack.id,
-          rect: viewport,
+          rect,
           visible: false,
           scale: 1,
           pinned: true,
+          layer: 0,
         });
       }
     }
   };
-  mainStacks(state).forEach(add);
-  for (const edge of Object.values(state.edges)) {
-    add(edge.stack);
+  mainStacks(state).forEach((stack) => add(stack, viewport));
+  for (const side of ["left", "right", "top", "bottom"] as const) {
+    const edge = state.edges[side];
+    if (!edge) {
+      continue;
+    }
+    // A hidden region's panels keep the region's size, so showing it again does not reflow them.
+    const size = Math.max(1, Math.round(edge.size));
+    const head = options.headerHeight;
+    add(
+      edge.stack,
+      side === "left" || side === "right"
+        ? { x: 0, y: head, width: Math.min(size, viewport.width), height: Math.max(0, viewport.height - head) }
+        : { x: 0, y: head, width: viewport.width, height: Math.max(0, Math.min(size, viewport.height) - head) },
+    );
   }
 }
 
@@ -266,7 +332,7 @@ function layoutEdges(context: Context, viewport: Rect): { main: Rect; yielded: E
   const { state, options } = context;
   const size = (side: EdgeSide, available: number): number => {
     const edge = state.edges[side];
-    if (!edge?.visible || !edge.stack.panels.length) {
+    if (!edge?.visible || !edge.stack.panels.length || options.hiddenEdges.includes(side)) {
       return 0;
     }
     const min = edge.min ?? (side === "left" || side === "right" ? options.minStackWidth : options.minStackHeight);
@@ -280,11 +346,14 @@ function layoutEdges(context: Context, viewport: Rect): { main: Rect; yielded: E
     bottom: size("bottom", viewport.height),
   };
   const yielded: EdgeSide[] = [];
-  // Regions give way, lowest priority first, until the main area has room.
+  // Regions give way until the main area has room: lowest priority first, and the preferred
+  // region last of all.
+  const rank = (side: EdgeSide): number =>
+    side === options.preferEdge ? Number.POSITIVE_INFINITY : (state.edges[side]?.priority ?? 0);
   const giveWay = (sides: readonly EdgeSide[], room: () => number, minimum: number): void => {
     const order = [...sides]
       .filter((side) => sizes[side] > 0)
-      .sort((a, b) => (state.edges[a]?.priority ?? 0) - (state.edges[b]?.priority ?? 0));
+      .sort((a, b) => (rank(a) === rank(b) ? 0 : rank(a) < rank(b) ? -1 : 1));
     for (const side of order) {
       if (room() >= minimum) {
         break;
@@ -568,6 +637,7 @@ function overview(
         visible: true,
         scale,
         pinned: true,
+        layer: 0,
       },
     ];
   });
@@ -581,5 +651,6 @@ function overview(
     splitters: [],
     cards,
     yielded,
+    camera: null,
   };
 }

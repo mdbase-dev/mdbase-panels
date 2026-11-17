@@ -12,6 +12,22 @@ export {
   stackOfPanel,
 } from "./tree.js";
 export { normalize, columnFractionRange } from "./normalize.js";
+export {
+  boundsOf,
+  cameraToFit,
+  cameraToReveal,
+  canvasDefaults,
+  canvasFrames,
+  clampCamera,
+  clampZoom,
+  dragFrame,
+  frameBeside,
+  sameCamera,
+  seedFrames,
+  zoomCameraAt,
+  type FrameHandle,
+} from "./canvas.js";
+export { violations } from "./invariants.js";
 export { apply, defaultEdgeSize, keepPanels } from "./operations.js";
 export {
   columnNodes,

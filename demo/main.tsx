@@ -1,8 +1,16 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 
-import { mainStacks, webStorage, WorkspaceStore, type Operation } from "../src/core/index.js";
-import { useWorkspaceState, Workspace } from "../src/react/index.js";
+import {
+  mainStacks,
+  seedFrames,
+  webStorage,
+  WorkspaceStore,
+  type Operation,
+  type ViewMode,
+  type WorkspaceLayout,
+} from "../src/core/index.js";
+import { useLeader, useWorkspaceState, Workspace } from "../src/react/index.js";
 import "../src/styles.css";
 
 const fresh = new URLSearchParams(location.search).has("fresh");
@@ -10,8 +18,8 @@ const seed: Operation[] = [
   { type: "add", panel: { id: "library", kind: "doc", title: "Library" } },
   { type: "add", panel: { id: "paper", kind: "doc", title: "Smith 2019" }, target: { at: "beside", panel: "library", side: "right" } },
   { type: "add", panel: { id: "notes", kind: "doc", title: "Notes on Smith" } },
-  { type: "add", panel: { id: "nav", kind: "side", title: "Sources" }, target: { at: "edge", side: "left" }, activate: false },
-  { type: "add", panel: { id: "inspector", kind: "side", title: "Notes" }, target: { at: "edge", side: "right" }, activate: false },
+  { type: "add", panel: { id: "nav", kind: "side", title: "Sources", leads: false }, target: { at: "edge", side: "left" }, activate: false },
+  { type: "add", panel: { id: "inspector", kind: "side", title: "Notes", leads: false }, target: { at: "edge", side: "right" }, activate: false },
   { type: "configureEdge", side: "left", options: { size: 220, priority: 0 } },
   { type: "configureEdge", side: "right", options: { size: 280, priority: 1 } },
   { type: "activate", panel: "paper" },
@@ -47,6 +55,23 @@ function Doc({ id, title }: { id: string; title: string }) {
   );
 }
 
+/** A follower: it is about whichever document last had focus, wherever it is put. */
+function Follower({ title }: { title: string }) {
+  const leader = useLeader(store);
+  return (
+    <div className="side">
+      <h3>{title}</h3>
+      <p data-following={leader?.id ?? ""}>
+        {leader ? `About: ${leader.title ?? leader.id}` : "No document is open."}
+      </p>
+      <p>A region docked to the side. Any tab can live here, and this one can live anywhere.</p>
+    </div>
+  );
+}
+
+const views: readonly ViewMode[] = ["tiling", "columns", "canvas"];
+let lastLayout: WorkspaceLayout | null = null;
+
 function App() {
   const state = useWorkspaceState(store);
   const [overview, setOverview] = useState(false);
@@ -77,7 +102,16 @@ function App() {
         >
           Open beside
         </button>
-        <button onClick={() => store.dispatch({ type: "setView", view: state.view === "tiling" ? "columns" : "tiling" })}>
+        <button
+          onClick={() => {
+            const view = views[(views.indexOf(state.view) + 1) % views.length] ?? "tiling";
+            store.dispatch({
+              type: "setView",
+              view,
+              ...(view === "canvas" && lastLayout ? { frames: seedFrames(lastLayout.stacks, lastLayout.main) } : {}),
+            });
+          }}
+        >
           View: {state.view}
         </button>
         <button onClick={() => setOverview(!overview)}>Overview</button>
@@ -93,12 +127,12 @@ function App() {
         layout={{ compactBelow: 681, compactHeaderHeight: 36 }}
         overview={overview}
         onOverviewChange={setOverview}
+        onLayout={(layout) => {
+          lastLayout = layout;
+        }}
         renderPanel={(panel) =>
           panel.kind === "side" ? (
-            <div className="side">
-              <h3>{panel.title}</h3>
-              <p>A fixed region. It keeps its width when the main area changes.</p>
-            </div>
+            <Follower title={panel.title ?? panel.id} />
           ) : (
             <Doc id={panel.id} title={panel.title ?? panel.id} />
           )

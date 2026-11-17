@@ -8,8 +8,14 @@ export type NodeId = string;
 export type EdgeSide = "left" | "right" | "top" | "bottom";
 export type SplitSide = "left" | "right" | "top" | "bottom";
 export type Direction = "row" | "column";
-/** How the main area is shown on a wide screen. Narrow screens always show one panel. */
-export type ViewMode = "tiling" | "columns";
+/**
+ * How the main area is shown on a wide screen. Narrow screens always show one panel.
+ * `tiling` fills the area, `columns` is a strip that scrolls sideways, and `canvas` is an
+ * unbounded plane where every stack has a position and size of its own.
+ */
+export type ViewMode = "tiling" | "columns" | "canvas";
+
+export const viewModes = ["tiling", "columns", "canvas"] as const;
 
 export const edgeSides = ["left", "right", "top", "bottom"] as const;
 
@@ -34,6 +40,12 @@ export interface PanelDescriptor {
   /** Smallest useful size in CSS pixels. */
   readonly minWidth?: number;
   readonly minHeight?: number;
+  /**
+   * Whether focusing this panel makes it the workspace's leader (see `WorkspaceState.leader`).
+   * Defaults to true. Set it to false on panels that show something about another panel, such
+   * as an outline or an inspector, so that using them does not change what they are about.
+   */
+  readonly leads?: boolean;
 }
 
 export interface StackNode {
@@ -55,11 +67,20 @@ export interface SplitNode {
 
 export type LayoutNode = StackNode | SplitNode;
 
-/** A fixed region at one side of the workspace. It keeps its size when the main area changes. */
+/**
+ * A region docked to one side of the workspace. It is an ordinary stack that keeps its size
+ * when the main area changes: any panel can live there, and a region with no panels takes no
+ * room.
+ */
 export interface EdgeRegion {
   readonly stack: StackNode;
   /** Width (left/right) or height (top/bottom) in CSS pixels. */
   readonly size: number;
+  /**
+   * Whether the user wants this region shown. Only `configureEdge` and putting a panel into the
+   * region change it. Whether it is on screen right now also depends on things that are never
+   * saved: room (`minMainWidth`), `LayoutOptions.hiddenEdges`, maximize and narrow screens.
+   */
   readonly visible: boolean;
   readonly min?: number;
   readonly max?: number;
@@ -68,6 +89,27 @@ export interface EdgeRegion {
    * Regions with equal priority yield right, bottom, top, then left.
    */
   readonly priority?: number;
+}
+
+/** Which part of the canvas is on screen: the plane point at the main area's top-left corner. */
+export interface Camera {
+  readonly x: number;
+  readonly y: number;
+  readonly zoom: number;
+}
+
+/** Where a stack sits on the canvas, in plane pixels. A higher `z` is drawn in front. */
+export interface CanvasFrame extends Rect {
+  readonly z: number;
+}
+
+export interface CanvasState {
+  /**
+   * One frame per main-area stack while the view is `canvas`. Frames are kept when the view
+   * changes, so going back to the canvas finds things where they were left.
+   */
+  readonly frames: { readonly [stack: NodeId]: CanvasFrame };
+  readonly camera: Camera;
 }
 
 export interface WorkspaceState {
@@ -86,6 +128,14 @@ export interface WorkspaceState {
    * id of a top-level child of the root row.
    */
   readonly columns: { readonly [id: NodeId]: number };
+  /** Positions for the `canvas` view. */
+  readonly canvas: CanvasState;
+  /**
+   * The panel that follower panels are about: the panel that last had focus, not counting
+   * panels with `leads: false`. Null when no panel can lead. What a follower shows is up to
+   * the app; the workspace only keeps track of whom to follow.
+   */
+  readonly leader: PanelId | null;
   /** Source of deterministic ids for nodes created by operations. */
   readonly seq: number;
 }
@@ -107,8 +157,20 @@ export type Target =
   | { readonly at: "column"; readonly stack?: NodeId; readonly side: "left" | "right" }
   /** A new stack along one side of the whole main area. */
   | { readonly at: "root"; readonly side: SplitSide }
-  /** A tab in an edge region. */
-  | { readonly at: "edge"; readonly side: EdgeSide; readonly index?: number };
+  /** A tab in an edge region. Putting a panel there shows the region. */
+  | { readonly at: "edge"; readonly side: EdgeSide; readonly index?: number }
+  /**
+   * A new stack at a point on the canvas (plane pixels, the new frame's top-left corner). A
+   * panel that is alone in its stack takes the stack with it. In other views it is a new stack
+   * at the right.
+   */
+  | {
+      readonly at: "canvas";
+      readonly x: number;
+      readonly y: number;
+      readonly width?: number;
+      readonly height?: number;
+    };
 
 export interface EdgeOptions {
   readonly size?: number;
@@ -145,7 +207,20 @@ export type Operation =
   | { readonly type: "resize"; readonly split: NodeId; readonly sizes: readonly number[] }
   | { readonly type: "configureEdge"; readonly side: EdgeSide; readonly options: EdgeOptions }
   | { readonly type: "maximize"; readonly stack: NodeId | null }
-  | { readonly type: "setView"; readonly view: ViewMode }
+  | {
+      readonly type: "setView";
+      readonly view: ViewMode;
+      /**
+       * Going to the canvas for the first time: where each main-area stack is on screen now
+       * (relative to the main area), so that the switch does not move anything. Ignored when
+       * any stack already has a frame.
+       */
+      readonly frames?: { readonly [stack: NodeId]: Rect };
+    }
+  /** Move or resize a stack on the canvas. */
+  | { readonly type: "setFrame"; readonly stack: NodeId; readonly frame: Partial<Rect> }
+  /** Pan or zoom the canvas. Not an undo step. */
+  | { readonly type: "setCamera"; readonly camera: Partial<Camera> }
   | { readonly type: "setColumnWidth"; readonly node: NodeId; readonly fraction: number }
   /** Gather every main-area panel into one stack, keeping the panels themselves. */
   | { readonly type: "flatten" }

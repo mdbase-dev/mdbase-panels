@@ -1,3 +1,4 @@
+import { boundsOf, canvasDefaults, clampCamera, frameBeside } from "./canvas.js";
 import { columnFractionRange, normalize } from "./normalize.js";
 import {
   edgeOfStack,
@@ -9,9 +10,11 @@ import {
   parentOf,
   replaceNode,
   stackOfPanel,
+  stacksOf,
   updateStack,
 } from "./tree.js";
 import {
+  type CanvasFrame,
   type Direction,
   type EdgeRegion,
   type EdgeSide,
@@ -19,6 +22,8 @@ import {
   type NodeId,
   type Operation,
   type PanelId,
+  type Rect,
+  type Size,
   type SplitSide,
   type StackNode,
   type Target,
@@ -50,7 +55,14 @@ function reduce(state: WorkspaceState, operation: Operation): WorkspaceState {
       }
       const panels = { ...state.panels };
       delete panels[operation.panel];
-      return { ...detach(state, operation.panel), panels };
+      const detached = detach(state, operation.panel);
+      if (state.leader !== operation.panel) {
+        return { ...detached, panels };
+      }
+      // Closing the leader hands over to the tab that takes its place, if that one can lead.
+      const stack = stackOfPanel(state, operation.panel);
+      const heir = stack ? (findStack(detached, stack.id)?.active ?? null) : null;
+      return { ...detached, panels, leader: heir };
     }
     case "move":
       return Object.hasOwn(state.panels, operation.panel)
@@ -145,8 +157,42 @@ function reduce(state: WorkspaceState, operation: Operation): WorkspaceState {
         ? { ...state, maximized: operation.stack, focus: operation.stack }
         : state;
     }
-    case "setView":
-      return state.view === operation.view ? state : { ...state, view: operation.view };
+    case "setView": {
+      const next = state.view === operation.view ? state : { ...state, view: operation.view };
+      const main = mainStacks(state);
+      if (
+        operation.view !== "canvas" ||
+        !operation.frames ||
+        main.some(({ id }) => state.canvas.frames[id])
+      ) {
+        return next;
+      }
+      const frames: { [stack: NodeId]: CanvasFrame } = {};
+      main.forEach(({ id }, index) => {
+        const rect = operation.frames?.[id];
+        if (rect && validRect(rect)) {
+          frames[id] = { ...sized(rect), z: index + 1 };
+        }
+      });
+      // The frames are measured from the main area's corner, so the camera starts there.
+      return { ...next, canvas: { frames, camera: { x: 0, y: 0, zoom: 1 } } };
+    }
+    case "setFrame": {
+      const current = state.canvas.frames[operation.stack];
+      if (!current || !isMainStack(state, operation.stack)) {
+        return state;
+      }
+      const frame = { ...current, ...definedNumbers(operation.frame) };
+      const next = { ...sized(frame), z: current.z };
+      return sameRect(next, current) ? state : withFrame(state, operation.stack, next);
+    }
+    case "setCamera": {
+      const camera = clampCamera({ ...state.canvas.camera, ...definedNumbers(operation.camera) });
+      const current = state.canvas.camera;
+      return camera.x === current.x && camera.y === current.y && camera.zoom === current.zoom
+        ? state
+        : { ...state, canvas: { ...state.canvas, camera } };
+    }
     case "setColumnWidth": {
       const fraction = Math.min(
         columnFractionRange.max,
@@ -202,6 +248,41 @@ export function keepPanels(target: WorkspaceState, current: WorkspaceState): Wor
   return next;
 }
 
+function validRect(rect: Rect): boolean {
+  return [rect.x, rect.y, rect.width, rect.height].every((value) => Number.isFinite(value));
+}
+
+function sameRect(a: Rect, b: Rect): boolean {
+  return a.x === b.x && a.y === b.y && a.width === b.width && a.height === b.height;
+}
+
+/** A rect that is at least as big as the smallest frame. */
+function sized(rect: Rect): Rect {
+  return {
+    x: rect.x,
+    y: rect.y,
+    width: Math.max(canvasDefaults.minFrame.width, rect.width),
+    height: Math.max(canvasDefaults.minFrame.height, rect.height),
+  };
+}
+
+function definedNumbers<T extends object>(values: T): Partial<T> {
+  return Object.fromEntries(
+    Object.entries(values).filter(([, value]) => typeof value === "number" && Number.isFinite(value)),
+  ) as Partial<T>;
+}
+
+function withFrame(state: WorkspaceState, stack: NodeId, frame: CanvasFrame): WorkspaceState {
+  return {
+    ...state,
+    canvas: { ...state.canvas, frames: { ...state.canvas.frames, [stack]: frame } },
+  };
+}
+
+function topZ(state: WorkspaceState): number {
+  return Math.max(0, ...Object.values(state.canvas.frames).map(({ z }) => z));
+}
+
 function nextId(state: WorkspaceState): [NodeId, number] {
   return [`n${String(state.seq)}`, state.seq + 1];
 }
@@ -223,15 +304,12 @@ function focusStack(state: WorkspaceState, id: NodeId): WorkspaceState {
   if (!stack) {
     return state;
   }
-  const side = edgeOfStack(state, id);
-  if (side) {
-    // Focusing a panel in an edge means showing it: reveal the region and leave maximize.
-    const edge = state.edges[side];
-    const edges =
-      edge && !edge.visible ? { ...state.edges, [side]: { ...edge, visible: true } } : state.edges;
-    return state.focus === id && edges === state.edges && state.maximized === null
+  if (edgeOfStack(state, id)) {
+    // An edge region is not part of a maximized workspace, so focusing one leaves maximize.
+    // Whether the region is wanted is the user's to say (`configureEdge`), not focus's.
+    return state.focus === id && state.maximized === null
       ? state
-      : { ...state, focus: id, edges, maximized: null };
+      : { ...state, focus: id, maximized: null };
   }
   // A maximized workspace keeps showing one stack, so maximize follows focus.
   const maximized = state.maximized === null ? null : id;
@@ -288,16 +366,87 @@ function place(
     const reordered = updateStack(state, source.id, (stack) => ({ ...stack, panels }));
     return activate ? activatePanel(reordered, panel) : reordered;
   }
+  if (resolved.at === "canvas") {
+    const given: Partial<Size> = {
+      ...(resolved.width === undefined ? {} : { width: resolved.width }),
+      ...(resolved.height === undefined ? {} : { height: resolved.height }),
+    };
+    const from = source ? state.canvas.frames[source.id] : undefined;
+    if (source && from && source.panels.length === 1 && isMainStack(state, source.id)) {
+      // A panel that is alone in its pane takes the pane with it.
+      const moved = withFrame(state, source.id, {
+        ...sized({ ...from, ...given, x: resolved.x, y: resolved.y }),
+        z: topZ(state) + 1,
+      });
+      return activate ? activatePanel(moved, panel) : moved;
+    }
+    const added = insert(detach(state, panel), panel, { at: "root", side: "right" }, activate);
+    const created = stackOfPanel(added, panel);
+    if (!created) {
+      return added;
+    }
+    const size = { ...canvasDefaults.frame, ...(from ? { width: from.width, height: from.height } : {}), ...given };
+    const framed = withFrame(added, created.id, {
+      ...sized({ x: resolved.x, y: resolved.y, ...size }),
+      z: topZ(added) + 1,
+    });
+    return activate ? activatePanel(framed, panel) : framed;
+  }
   const detached = detach(state, panel);
-  const inserted = insert(detached, panel, resolved, activate);
+  const inserted = placeFrame(insert(detached, panel, resolved, activate), panel, resolved);
   return activate ? activatePanel(inserted, panel) : inserted;
+}
+
+/**
+ * On the canvas, a stack made by splitting goes beside what it was split from, on the side
+ * that was asked for. (Stacks that get no frame here are placed by normalization.)
+ */
+function placeFrame(state: WorkspaceState, panel: PanelId, target: Resolved): WorkspaceState {
+  if (state.view !== "canvas" || (target.at !== "split" && target.at !== "root")) {
+    return state;
+  }
+  const created = stackOfPanel(state, panel);
+  if (!created || state.canvas.frames[created.id]) {
+    return state;
+  }
+  const live = mainStacks(state).flatMap(({ id, panels }) => {
+    const frame = state.canvas.frames[id];
+    return frame && panels.length ? [{ id, frame }] : [];
+  });
+  const node = target.at === "split" ? findNode(state.root, target.stack) : state.root;
+  const beside = node ? new Set(stacksOf(node).map(({ id }) => id)) : new Set<NodeId>();
+  const near = live.filter(({ id }) => beside.has(id)).map(({ frame }) => frame);
+  const reference = boundsOf(near);
+  if (!reference) {
+    return state;
+  }
+  const top = live.reduce<CanvasFrame | undefined>(
+    (best, { frame }) => (!best || frame.z > best.z ? frame : best),
+    undefined,
+  );
+  const like = near.length === 1 ? near[0] : top;
+  const size = like ? { width: like.width, height: like.height } : canvasDefaults.frame;
+  const rect = frameBeside(
+    live.map(({ frame }) => frame),
+    reference,
+    target.side,
+    size,
+  );
+  return withFrame(state, created.id, { ...rect, z: topZ(state) + 1 });
 }
 
 type Resolved =
   | { readonly at: "stack"; readonly stack: NodeId; readonly index?: number }
   | { readonly at: "split"; readonly stack: NodeId; readonly side: SplitSide }
   | { readonly at: "root"; readonly side: SplitSide }
-  | { readonly at: "edge"; readonly side: EdgeSide; readonly index?: number };
+  | { readonly at: "edge"; readonly side: EdgeSide; readonly index?: number }
+  | {
+      readonly at: "canvas";
+      readonly x: number;
+      readonly y: number;
+      readonly width?: number;
+      readonly height?: number;
+    };
 
 function resolve(state: WorkspaceState, target: Target): Resolved {
   const index = "index" in target && target.index !== undefined ? { index: target.index } : {};
@@ -340,13 +489,17 @@ function resolve(state: WorkspaceState, target: Target): Resolved {
       return { at: "root", side: target.side };
     case "edge":
       return { at: "edge", side: target.side, ...index };
+    case "canvas":
+      return state.view === "canvas" && Number.isFinite(target.x) && Number.isFinite(target.y)
+        ? target
+        : { at: "root", side: "right" };
   }
 }
 
 function insert(
   state: WorkspaceState,
   panel: PanelId,
-  target: Resolved,
+  target: Exclude<Resolved, { at: "canvas" }>,
   activate: boolean,
 ): WorkspaceState {
   if (target.at === "stack") {
@@ -364,9 +517,12 @@ function insert(
       visible: true,
     };
     const created = !state.edges[target.side];
+    // Putting a panel into a region is asking to see it there.
     const withEdge = created
       ? { ...state, seq, edges: { ...state.edges, [target.side]: edge } }
-      : state;
+      : edge.visible
+        ? state
+        : { ...state, edges: { ...state.edges, [target.side]: { ...edge, visible: true } } };
     return insert(
       withEdge,
       panel,

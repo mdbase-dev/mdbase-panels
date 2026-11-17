@@ -12,10 +12,13 @@ import {
   type Operation,
   type PanelDescriptor,
   type Target,
+  viewModes,
   type WorkspaceState,
 } from "./types.js";
 
-const panel = (id: string): PanelDescriptor => ({ id, kind: "doc" });
+// "f" is a follower: it shows something about another panel and never leads.
+const panel = (id: string): PanelDescriptor =>
+  id === "f" ? { id, kind: "tool", leads: false } : { id, kind: "doc" };
 const run = (operations: readonly Operation[], from = emptyWorkspace()): WorkspaceState =>
   operations.reduce(apply, from);
 const add = (id: string, target?: Target): Operation => ({
@@ -154,15 +157,28 @@ describe("operations", () => {
     expect(removed.focus).toBe(stackOfPanel(removed, "a")?.id);
   });
 
-  it("reveals a hidden edge when one of its panels is activated", () => {
+  it("leaves what the user wants alone when a panel in a hidden edge takes focus", () => {
     const state = run([
       add("a"),
       { type: "add", panel: panel("nav"), target: { at: "edge", side: "left" }, activate: false },
       { type: "configureEdge", side: "left", options: { visible: false } },
       { type: "activate", panel: "nav" },
     ]);
-    expect(state.edges.left?.visible).toBe(true);
+    // A narrow screen shows the focused panel whatever the region says; the wish is not rewritten.
+    expect(state.edges.left?.visible).toBe(false);
     expect(state.focus).toBe(state.edges.left?.stack.id);
+  });
+
+  it("shows a hidden edge when a panel is put into it", () => {
+    const state = run([
+      add("a"),
+      add("b"),
+      { type: "add", panel: panel("nav"), target: { at: "edge", side: "left" }, activate: false },
+      { type: "configureEdge", side: "left", options: { visible: false } },
+      { type: "move", panel: "b", target: { at: "edge", side: "left" } },
+    ]);
+    expect(state.edges.left?.visible).toBe(true);
+    expect(state.edges.left?.stack.panels).toEqual(["nav", "b"]);
   });
 
   it("returns focus to the main area when the focused edge is hidden", () => {
@@ -214,6 +230,7 @@ describe("operations", () => {
 });
 
 const ids = ["a", "b", "c", "d", "e", "f"] as const;
+const coordinate = fc.double({ min: -4000, max: 4000, noNaN: true });
 const side = fc.constantFrom("left", "right", "top", "bottom");
 const anyPanel = fc.constantFrom(...ids);
 const target = (stacks: fc.Arbitrary<string>): fc.Arbitrary<Target> =>
@@ -226,6 +243,10 @@ const target = (stacks: fc.Arbitrary<string>): fc.Arbitrary<Target> =>
     fc.record({ at: fc.constant("column" as const), side: fc.constantFrom("left" as const, "right" as const) }),
     fc.record({ at: fc.constant("column" as const), stack: stacks, side: fc.constantFrom("left" as const, "right" as const) }),
     fc.record({ at: fc.constant("edge" as const), side: fc.constantFrom(...edgeSides), index: fc.nat(3) }),
+    fc.record(
+      { at: fc.constant("canvas" as const), x: coordinate, y: coordinate, width: coordinate, height: coordinate },
+      { requiredKeys: ["at", "x", "y"] },
+    ),
   );
 // Node ids are deterministic (`n1`, `n2`, …), so a small range reaches real stacks and misses.
 const stackId = fc.nat(14).map((value) => `n${String(value)}`);
@@ -244,7 +265,21 @@ const operation: fc.Arbitrary<Operation> = fc.oneof(
     side: fc.constantFrom(...edgeSides),
     options: fc.record({ visible: fc.boolean(), size: fc.double({ min: -50, max: 900, noNaN: true }) }, { requiredKeys: [] }),
   }),
-  fc.record({ type: fc.constant("setView" as const), view: fc.constantFrom("tiling" as const, "columns" as const) }),
+  fc.record({ type: fc.constant("setView" as const), view: fc.constantFrom(...viewModes) }),
+  fc.record({
+    type: fc.constant("setView" as const),
+    view: fc.constant("canvas" as const),
+    frames: fc.dictionary(stackId, fc.record({ x: coordinate, y: coordinate, width: coordinate, height: coordinate })),
+  }),
+  fc.record({
+    type: fc.constant("setFrame" as const),
+    stack: stackId,
+    frame: fc.record({ x: coordinate, y: coordinate, width: coordinate, height: coordinate }, { requiredKeys: [] }),
+  }),
+  fc.record({
+    type: fc.constant("setCamera" as const),
+    camera: fc.record({ x: coordinate, y: coordinate, zoom: fc.double({ min: -1, max: 5, noNaN: true }) }, { requiredKeys: [] }),
+  }),
   fc.record({ type: fc.constant("setColumnWidth" as const), node: stackId, fraction: fc.double({ min: -1, max: 3, noNaN: true }) }),
   fc.record({ type: fc.constant("flatten" as const) }),
 );
@@ -299,6 +334,10 @@ describe("any sequence of operations", () => {
             for (const stack of layout.stacks) {
               expect(stack.rect.width).toBeGreaterThanOrEqual(0);
               expect(stack.rect.height).toBeGreaterThanOrEqual(0);
+              if (layout.mode === "canvas" && !stack.pinned) {
+                // A pane on the canvas is in plane pixels and may be anywhere.
+                continue;
+              }
               expect(stack.rect.x).toBeGreaterThanOrEqual(0);
               expect(stack.rect.x + stack.rect.width).toBeLessThanOrEqual(layout.contentWidth + 0.5);
               expect(stack.rect.y + stack.rect.height).toBeLessThanOrEqual(height + 0.5);

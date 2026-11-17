@@ -1,6 +1,8 @@
+import { canvasDefaults } from "./canvas.js";
 import { type StackLayout, type WorkspaceLayout } from "./layout.js";
-import { stackOfPanel } from "./tree.js";
+import { isMainStack, stackOfPanel } from "./tree.js";
 import {
+  type Camera,
   type NodeId,
   type PanelId,
   type Rect,
@@ -11,7 +13,10 @@ import {
 
 export interface DropTarget {
   readonly target: Target;
-  /** Where the panel would land, in the coordinates of the stack it is over. */
+  /**
+   * Where the panel would land, in the coordinates of the stack it is over: the viewport when
+   * `pinned`, else the scrolling main area or the canvas plane.
+   */
   readonly indicator: Rect;
   readonly pinned: boolean;
 }
@@ -28,6 +33,8 @@ export interface DropOptions {
   readonly splitZone?: number;
   /** Band along the main area's outer sides that splits the whole area. */
   readonly rootZone?: number;
+  /** The camera as drawn right now, when a view pans without waiting for the state. */
+  readonly camera?: Camera;
 }
 
 function contains(rect: Rect, x: number, y: number): boolean {
@@ -48,8 +55,11 @@ export function dropTargetAt(
   if (layout.mode === "stack" || layout.mode === "overview") {
     return null;
   }
-  const scroll = options.scrollLeft ?? 0;
   const source = stackOfPanel(state, panel);
+  if (layout.mode === "canvas") {
+    return canvasTarget(state, layout, source?.id ?? null, source?.panels.length === 1, point, options);
+  }
+  const scroll = options.scrollLeft ?? 0;
   // Pinned stacks sit above the scrolling main area, so they are tested first.
   const ordered = [...layout.stacks].sort((a, b) => Number(b.pinned) - Number(a.pinned));
   for (const stack of ordered) {
@@ -91,6 +101,65 @@ export function dropTargetAt(
     return { target: { at: "focus" }, indicator: layout.main, pinned: true };
   }
   return null;
+}
+
+/** On the canvas a panel joins a pane it is dropped on, or gets a pane of its own on open ground. */
+function canvasTarget(
+  state: WorkspaceState,
+  layout: WorkspaceLayout,
+  source: NodeId | null,
+  lone: boolean,
+  point: { readonly x: number; readonly y: number },
+  options: DropOptions,
+): DropTarget | null {
+  for (const stack of layout.stacks.filter(({ pinned }) => pinned)) {
+    if (!contains(stack.rect, point.x, point.y)) {
+      continue;
+    }
+    if (contains(stack.header, point.x, point.y)) {
+      return tabTarget(stack, point.x, 0, options.tabs?.(stack.id) ?? []);
+    }
+    return {
+      target: stack.edge ? { at: "edge", side: stack.edge } : { at: "stack", stack: stack.id },
+      indicator: stack.body,
+      pinned: true,
+    };
+  }
+  if (!contains(layout.main, point.x, point.y)) {
+    return null;
+  }
+  const camera = options.camera ?? layout.camera ?? { x: 0, y: 0, zoom: 1 };
+  const toPlane = (rect: Rect): Rect => ({
+    x: (rect.x - layout.main.x) / camera.zoom + camera.x,
+    y: (rect.y - layout.main.y) / camera.zoom + camera.y,
+    width: rect.width / camera.zoom,
+    height: rect.height / camera.zoom,
+  });
+  const at = toPlane({ ...point, width: 0, height: 0 });
+  const front = layout.stacks.filter(({ pinned }) => !pinned).sort((a, b) => b.layer - a.layer);
+  for (const stack of front) {
+    if (!contains(stack.rect, at.x, at.y)) {
+      continue;
+    }
+    if (contains(stack.header, at.x, at.y)) {
+      return tabTarget(stack, at.x, 0, (options.tabs?.(stack.id) ?? []).map(toPlane));
+    }
+    if (lone && stack.id === source) {
+      break;
+    }
+    return { target: { at: "stack", stack: stack.id }, indicator: stack.body, pinned: false };
+  }
+  // Open ground: a pane of its own, held by the middle of its tab strip.
+  const from = source !== null && isMainStack(state, source) ? state.canvas.frames[source] : undefined;
+  const size = from ? { width: from.width, height: from.height } : canvasDefaults.frame;
+  const grid = canvasDefaults.grid;
+  const x = Math.round((at.x - size.width / 2) / grid) * grid;
+  const y = Math.round((at.y - 18) / grid) * grid;
+  return {
+    target: { at: "canvas", x, y, ...size },
+    indicator: { x, y, ...size },
+    pinned: false,
+  };
 }
 
 function shift(rect: Rect, x: number): Rect {
