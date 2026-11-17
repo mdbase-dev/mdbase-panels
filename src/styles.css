@@ -1,0 +1,412 @@
+/*
+ * Theme with custom properties on .mp-workspace or any ancestor. Every colour has a default
+ * for light and dark, so the workspace is usable unstyled.
+ */
+.mp-workspace {
+  --mp-bg: light-dark(#f4f4f2, #18181a);
+  --mp-surface: light-dark(#ffffff, #202023);
+  --mp-header-bg: light-dark(#ececea, #1b1b1e);
+  --mp-border: light-dark(#d9d9d5, #34343a);
+  --mp-text: light-dark(#1d1d1f, #ececee);
+  --mp-muted: light-dark(#6b6b70, #9a9aa2);
+  --mp-accent: light-dark(#2f6fde, #7aa7ff);
+  --mp-tab-hover: light-dark(rgb(0 0 0 / 5%), rgb(255 255 255 / 6%));
+  --mp-drop: color-mix(in srgb, var(--mp-accent) 22%, transparent);
+  --mp-shadow: 0 8px 28px rgb(0 0 0 / 22%);
+  --mp-radius: 6px;
+  --mp-font: inherit;
+  --mp-tab-max-width: 220px;
+  --mp-splitter-hit: 9px;
+
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--mp-bg);
+  color: var(--mp-text);
+  font: var(--mp-font);
+  color-scheme: light dark;
+  isolation: isolate;
+}
+
+.mp-scroller {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  scrollbar-width: none;
+  overscroll-behavior-x: contain;
+}
+.mp-scroller[data-mp-scrolls] {
+  overflow-x: auto;
+}
+.mp-scroller::-webkit-scrollbar {
+  display: none;
+}
+
+.mp-content {
+  position: relative;
+  height: 100%;
+  min-width: 100%;
+}
+
+/* Zero-size anchors: the things inside are positioned from the content's top-left corner. */
+.mp-pin {
+  position: relative;
+  width: 0;
+  height: 0;
+}
+.mp-pin[data-mp-pinned] {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+}
+
+.mp-stack,
+.mp-panel,
+.mp-splitter,
+.mp-empty,
+.mp-drop,
+.mp-card {
+  position: absolute;
+  box-sizing: border-box;
+}
+
+.mp-stack {
+  background: var(--mp-surface);
+  transform-origin: 0 0;
+}
+
+.mp-header {
+  display: flex;
+  align-items: stretch;
+  box-sizing: border-box;
+  background: var(--mp-header-bg);
+  border-bottom: 1px solid var(--mp-border);
+}
+.mp-header[hidden] {
+  display: none;
+}
+
+.mp-tabs {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.mp-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.mp-tab {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: var(--mp-tab-max-width);
+  padding: 0 10px;
+  border-right: 1px solid var(--mp-border);
+  color: var(--mp-muted);
+  font-size: 0.8125rem;
+  white-space: nowrap;
+  cursor: default;
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: pan-x;
+}
+.mp-tab:hover {
+  background: var(--mp-tab-hover);
+}
+.mp-tab[data-mp-active] {
+  background: var(--mp-surface);
+  color: var(--mp-text);
+  box-shadow: inset 0 -2px 0 var(--mp-border);
+}
+.mp-stack[data-mp-focused] .mp-tab[data-mp-active] {
+  box-shadow: inset 0 -2px 0 var(--mp-accent);
+}
+.mp-tab[data-mp-dragged] {
+  opacity: 0.45;
+}
+.mp-tab:focus-visible {
+  outline: 2px solid var(--mp-accent);
+  outline-offset: -2px;
+}
+
+.mp-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mp-tab-close {
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  opacity: 0;
+}
+.mp-tab:hover .mp-tab-close,
+.mp-tab[data-mp-active] .mp-tab-close {
+  opacity: 0.7;
+}
+.mp-tab-close:hover {
+  background: var(--mp-tab-hover);
+  opacity: 1;
+}
+
+.mp-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+}
+
+.mp-panel {
+  overflow: hidden;
+  background: var(--mp-surface);
+  transform-origin: 0 0;
+}
+.mp-panel:not([data-mp-visible]) {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.mp-splitter {
+  background: var(--mp-border);
+  touch-action: none;
+  z-index: 1;
+}
+.mp-splitter::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+.mp-splitter[data-mp-direction="row"] {
+  cursor: col-resize;
+}
+.mp-splitter[data-mp-direction="row"]::after {
+  inset: 0 calc(var(--mp-splitter-hit) / -2);
+}
+.mp-splitter[data-mp-direction="column"] {
+  cursor: row-resize;
+}
+.mp-splitter[data-mp-direction="column"]::after {
+  inset: calc(var(--mp-splitter-hit) / -2) 0;
+}
+.mp-splitter:hover,
+.mp-splitter:focus-visible,
+.mp-workspace[data-mp-resizing] .mp-splitter:active {
+  background: var(--mp-accent);
+  outline: none;
+}
+
+/*
+ * While dragging or resizing, nothing underneath should take the pointer. A frame swallows
+ * pointer events whatever its ancestors say, so a shield covers the window as well.
+ */
+.mp-workspace[data-mp-dragging] .mp-panel,
+.mp-workspace[data-mp-resizing] .mp-panel {
+  pointer-events: none;
+}
+.mp-shield {
+  position: fixed;
+  inset: 0;
+  z-index: 999;
+  display: none;
+  touch-action: none;
+}
+.mp-workspace[data-mp-dragging] > .mp-shield,
+.mp-workspace[data-mp-resizing] > .mp-shield {
+  display: block;
+}
+.mp-workspace[data-mp-resizing="row"] {
+  cursor: col-resize;
+}
+.mp-workspace[data-mp-resizing="column"] {
+  cursor: row-resize;
+}
+.mp-workspace[data-mp-dragging] {
+  cursor: grabbing;
+}
+
+.mp-empty {
+  display: grid;
+  place-items: center;
+  color: var(--mp-muted);
+}
+
+.mp-drop {
+  z-index: 4;
+  border: 2px solid var(--mp-accent);
+  border-radius: var(--mp-radius);
+  background: var(--mp-drop);
+  pointer-events: none;
+  transition:
+    left 90ms ease-out,
+    top 90ms ease-out,
+    width 90ms ease-out,
+    height 90ms ease-out;
+}
+
+.mp-ghost {
+  position: fixed;
+  z-index: 1000;
+  max-width: 240px;
+  margin: 12px 0 0 12px;
+  padding: 5px 10px;
+  overflow: hidden;
+  border: 1px solid var(--mp-border);
+  border-radius: var(--mp-radius);
+  background: var(--mp-surface);
+  box-shadow: var(--mp-shadow);
+  color: var(--mp-text);
+  font-size: 0.8125rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.mp-menu {
+  position: fixed;
+  z-index: 1001;
+  display: flex;
+  flex-direction: column;
+  min-width: 200px;
+  max-width: 340px;
+  padding: 4px;
+  border: 1px solid var(--mp-border);
+  border-radius: var(--mp-radius);
+  background: var(--mp-surface);
+  box-shadow: var(--mp-shadow);
+}
+.mp-menu-item {
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 4px;
+  background: none;
+  color: var(--mp-text);
+  font: inherit;
+  font-size: 0.8125rem;
+  text-align: left;
+  cursor: default;
+}
+.mp-menu-item.is-separated {
+  margin-top: 4px;
+  border-top: 1px solid var(--mp-border);
+  border-radius: 0 0 4px 4px;
+}
+.mp-menu-item:hover:not(:disabled),
+.mp-menu-item:focus-visible {
+  background: var(--mp-tab-hover);
+  outline: none;
+}
+.mp-menu-item:disabled {
+  color: var(--mp-muted);
+  opacity: 0.6;
+}
+
+/* Overview: every panel as a card. The cards sit above the scaled panels and take the clicks. */
+.mp-workspace[data-mp-mode="overview"] .mp-panel {
+  border-radius: var(--mp-radius);
+  box-shadow: var(--mp-shadow);
+  visibility: visible;
+}
+.mp-overview {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 3;
+}
+.mp-card-target {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: flex-start;
+  padding: 0;
+  border: 0;
+  border-radius: var(--mp-radius);
+  background: none;
+  color: var(--mp-text);
+  font: inherit;
+  cursor: pointer;
+}
+.mp-card-target:hover,
+.mp-card-target:focus-visible {
+  outline: 2px solid var(--mp-accent);
+  outline-offset: 3px;
+}
+.mp-card-label {
+  display: flex;
+  align-items: center;
+  max-width: 100%;
+  overflow: hidden;
+  font-size: 0.8125rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The columns strip: a small map of the columns with the part on screen marked. */
+.mp-columns-bar {
+  position: absolute;
+  bottom: 6px;
+  z-index: 5;
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+.mp-columns-track {
+  position: relative;
+  width: min(40%, 280px);
+  height: 14px;
+  border: 1px solid var(--mp-border);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--mp-surface) 88%, transparent);
+  box-shadow: 0 1px 6px rgb(0 0 0 / 14%);
+  overflow: hidden;
+  opacity: 0.55;
+  cursor: pointer;
+  pointer-events: auto;
+  touch-action: none;
+  transition: opacity 120ms;
+}
+.mp-columns-track:hover {
+  opacity: 1;
+}
+.mp-columns-mark {
+  position: absolute;
+  box-sizing: border-box;
+  border: 1px solid var(--mp-surface);
+  border-radius: 2px;
+  background: var(--mp-border);
+}
+.mp-columns-mark[data-mp-focused] {
+  background: var(--mp-accent);
+}
+.mp-columns-thumb {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  box-sizing: border-box;
+  border: 1.5px solid var(--mp-text);
+  border-radius: 6px;
+  opacity: 0.6;
+}
+
+.mp-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mp-drop,
+  .mp-columns-track {
+    transition: none;
+  }
+}

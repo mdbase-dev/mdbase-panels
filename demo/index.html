@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>mdbase panels demo</title>
+    <style>
+      html, body, #app { height: 100%; margin: 0; }
+      body { font: 14px/1.4 system-ui, sans-serif; }
+      .shell { display: grid; grid-template-rows: auto 1fr; height: 100%; }
+      .bar { display: flex; flex-wrap: wrap; gap: 6px; padding: 6px 8px; border-bottom: 1px solid #ccc; }
+      .doc { box-sizing: border-box; height: 100%; padding: 16px; overflow: auto; }
+      .doc iframe { width: 100%; height: 240px; border: 1px solid #ccc; }
+      .side { box-sizing: border-box; height: 100%; padding: 12px; overflow: auto; }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="./main.tsx"></script>
+  </body>
+</html>
