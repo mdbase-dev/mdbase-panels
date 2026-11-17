@@ -28,6 +28,7 @@ import {
   findStack,
   resizeSplitter,
   sameCamera,
+  towardsActualSize,
   zoomCameraAt,
   type Camera,
   type DropTarget,
@@ -299,9 +300,12 @@ export function Workspace(props: WorkspaceProps): JSX.Element {
     while (grid < 14) {
       grid *= 2;
     }
+    // At actual size the plane sits on whole pixels, so text in a pane stays sharp.
+    const place = (value: number): number => (zoom === 1 ? Math.round(value) : value);
+    root.current?.toggleAttribute("data-mp-zoomed", zoom !== 1);
     element.style.setProperty("--mp-zoom", String(zoom));
-    element.style.setProperty("--mp-cam-x", `${String(main.x - x * zoom)}px`);
-    element.style.setProperty("--mp-cam-y", `${String(main.y - y * zoom)}px`);
+    element.style.setProperty("--mp-cam-x", `${String(place(main.x - x * zoom))}px`);
+    element.style.setProperty("--mp-cam-y", `${String(place(main.y - y * zoom))}px`);
     element.style.setProperty("--mp-pan-x", `${String(-x * zoom)}px`);
     element.style.setProperty("--mp-pan-y", `${String(-y * zoom)}px`);
     element.style.setProperty("--mp-grid", `${String(grid)}px`);
@@ -463,8 +467,10 @@ export function Workspace(props: WorkspaceProps): JSX.Element {
     }
   });
 
+  // Reported before the browser paints or handles input, so an app that keeps the size (to know
+  // it is in the phone layout, say) never acts on a key press with the size from before.
   const onLayout = props.onLayout;
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (layout) {
       onLayout?.(layout);
     }
@@ -568,8 +574,14 @@ export function Workspace(props: WorkspaceProps): JSX.Element {
       const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? current.main.height : 1;
       const camera = goal.current;
       if (zooming) {
-        const factor = Math.exp(-event.deltaY * unit * 0.01);
-        lookAt(zoomCameraAt(camera, point, camera.zoom * factor), { glide: false, commit: "soon" });
+        // A pinch arrives as many small steps; a mouse wheel as one large one per notch, which
+        // is held to about a quarter so that a notch does not throw the view across the canvas.
+        const step = Math.max(-30, Math.min(30, event.deltaY * unit));
+        const factor = Math.exp(-step * 0.01);
+        lookAt(zoomCameraAt(camera, point, towardsActualSize(camera.zoom, camera.zoom * factor)), {
+          glide: false,
+          commit: "soon",
+        });
       } else {
         lookAt(
           {
@@ -694,10 +706,18 @@ export function Workspace(props: WorkspaceProps): JSX.Element {
       lookAt(cameraToFit(bounds, current.main));
     }
   };
+  /** Bring a pane to actual size, where it can be worked in: centred, or from its corner if it is larger than the view. */
   const zoomTo = (stack: StackLayout): void => {
-    const current = layoutRef.current;
-    if (current) {
-      lookAt(cameraToFit(stack.rect, current.main, 24));
+    const main = layoutRef.current?.main;
+    if (main) {
+      const { rect } = stack;
+      const along = (start: number, length: number, room: number): number =>
+        length + 48 > room ? start - 24 : start + length / 2 - room / 2;
+      lookAt({
+        x: along(rect.x, rect.width, main.width),
+        y: along(rect.y, rect.height, main.height),
+        zoom: 1,
+      });
     }
   };
 
@@ -811,21 +831,23 @@ export function Workspace(props: WorkspaceProps): JSX.Element {
                 .filter(({ pinned }) => !pinned)
                 .map((stack) => (
                   <Pin key={`frame:${stack.id}`} pinned={false} layer={stack.layer}>
-                    {stack.focused ? null : (
-                      // A pane that is not in use is covered: a click picks it, a drag or the
-                      // wheel moves the canvas, and nothing inside it can swallow either.
-                      <div
-                        className="mp-cover"
-                        style={rectStyle(stack.body)}
-                        onPointerDown={(event) =>
-                          beginPan(event, () => {
-                            canvasPress.current = performance.now();
-                            store.dispatch({ type: "focus", stack: stack.id }, { animate: false });
-                          })
-                        }
-                        onDoubleClick={() => zoomTo(stack)}
-                      />
-                    )}
+                    {/*
+                      A pane that is not in use is covered: a click picks it, a drag or the wheel
+                      moves the canvas, and nothing inside it can swallow either. The pane in use
+                      is covered too unless the canvas is at actual size (see the stylesheet).
+                    */}
+                    <div
+                      className="mp-cover"
+                      data-mp-focused={stack.focused || undefined}
+                      style={rectStyle(stack.body)}
+                      onPointerDown={(event) =>
+                        beginPan(event, () => {
+                          canvasPress.current = performance.now();
+                          store.dispatch({ type: "focus", stack: stack.id }, { animate: false });
+                        })
+                      }
+                      onDoubleClick={() => zoomTo(stack)}
+                    />
                     <div className="mp-frame-handles" style={rectStyle(stack.rect)} aria-hidden="true">
                       {frameHandles.map((handle) => (
                         <div

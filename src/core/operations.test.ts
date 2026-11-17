@@ -258,6 +258,7 @@ const operation: fc.Arbitrary<Operation> = fc.oneof(
   fc.record({ type: fc.constant("moveStack" as const), stack: stackId, target: target(stackId) }),
   fc.record({ type: fc.constant("activate" as const), panel: anyPanel }),
   fc.record({ type: fc.constant("focus" as const), stack: stackId }),
+  fc.record({ type: fc.constant("lead" as const), panel: anyPanel }),
   fc.record({ type: fc.constant("maximize" as const), stack: fc.option(stackId, { nil: null }) }),
   fc.record({ type: fc.constant("resize" as const), split: stackId, sizes: fc.array(fc.double({ min: -1, max: 5, noNaN: true }), { maxLength: 4 }) }),
   fc.record({

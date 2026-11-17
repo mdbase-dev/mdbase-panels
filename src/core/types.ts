@@ -199,6 +199,11 @@ export type Operation =
   | { readonly type: "moveStack"; readonly stack: NodeId; readonly target: Target }
   | { readonly type: "activate"; readonly panel: PanelId }
   | { readonly type: "focus"; readonly stack: NodeId }
+  /**
+   * Name the leader, for when the focused panel does not lead: a panel that has just become a
+   * follower says which panel it follows. Ignored for a panel that cannot lead.
+   */
+  | { readonly type: "lead"; readonly panel: PanelId }
   | {
       readonly type: "update";
       readonly panel: PanelId;

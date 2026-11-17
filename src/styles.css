@@ -465,6 +465,18 @@
   position: absolute;
   touch-action: none;
 }
+/*
+ * The pane in use is live at actual size only. Zoomed, it is a picture to arrange like the
+ * rest: content drawn through a scale cannot be trusted to measure itself, and a wheel over it
+ * should move the canvas.
+ */
+.mp-cover[data-mp-focused] {
+  display: none;
+}
+.mp-workspace[data-mp-zoomed] .mp-cover[data-mp-focused] {
+  display: block;
+  cursor: zoom-in;
+}
 .mp-frame-handles {
   position: absolute;
   pointer-events: none;

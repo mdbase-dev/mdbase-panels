@@ -24,6 +24,7 @@ export {
   frameBeside,
   sameCamera,
   seedFrames,
+  towardsActualSize,
   zoomCameraAt,
   type FrameHandle,
 } from "./canvas.js";

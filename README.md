@@ -89,7 +89,8 @@ asked for most recently. `layout.yielded` lists the regions that gave way.
 `state.leader` is the active panel of the focused stack whenever that panel can lead, and
 otherwise stays what it was. Closing the leader hands over to the tab that takes its place. Give
 panels that are *about* another panel `leads: false`, and read the leader with `useLeader(store)`
-(or from the state). What a follower shows, and whether a particular follower is following at
+(or from the state). When the focused panel does not lead, `{ type: "lead", panel }` names the
+leader: a panel that has just been made a follower uses it to say which panel it follows. What a follower shows, and whether a particular follower is following at
 the moment, is the app's business: a pinned follower can simply keep the panel it was showing.
 
 ### The canvas
@@ -125,6 +126,7 @@ store.dispatch({ type: "setView", view: "columns" });
 | `add`, `remove`, `update` | Open, close or change a panel |
 | `move`, `moveStack` | Put a panel, or a whole stack of them, somewhere else |
 | `activate`, `focus` | Show a panel; give a stack focus |
+| `lead` | Name the leader while the focused panel does not lead |
 | `resize`, `setColumnWidth`, `configureEdge` | Sizes of splits, columns and side regions |
 | `maximize` | One stack fills the workspace (pass `null` to restore) |
 | `setView` | `tiling`, `columns` or `canvas` |
@@ -187,9 +189,12 @@ Ctrl/Cmd+Shift+arrows to reorder, arrow keys on a focused splitter), context men
 for screen readers, and animation between layouts (off when the system asks for reduced motion).
 
 On the canvas, the wheel pans and Ctrl or Cmd with the wheel (a trackpad pinch) zooms about the
-pointer; dragging open ground pans. The focused pane works as usual. The others are covered, so
-that a click picks one, a double click zooms to it, and a wheel or drag over one moves the canvas
-instead of being swallowed by a frame inside it. A pane is moved by the grip at the start of its
+pointer; dragging open ground pans. The focused pane works as usual while the canvas is at actual
+size (100%). Every other pane is covered, and so is the focused one at any other zoom: a click
+picks a pane, a double click brings it to actual size, and a wheel or drag over it moves the canvas
+instead of being swallowed by a frame inside it. Content is never asked to work through a scale,
+so anything that measures itself (a selection toolbar, an annotation) behaves as it does in the
+other views. A zoom that reaches 100% settles there. A pane is moved by the grip at the start of its
 tab strip (or any bare part of the strip; arrow keys on the grip move it, with Shift they resize
 it) and resized from its sides and corners. Dragging a tab onto open ground gives it a pane of
 its own. Panning and zooming change one transform per pane and lay nothing out again; the camera

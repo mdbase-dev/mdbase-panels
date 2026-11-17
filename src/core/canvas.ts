@@ -27,6 +27,17 @@ export function clampZoom(zoom: number): number {
   return Number.isFinite(zoom) ? Math.min(max, Math.max(min, zoom)) : 1;
 }
 
+/**
+ * A zoom step that settles on actual size when it reaches it: one that crosses 100%, or lands
+ * within a few percent of it on the way there, stops at exactly 100%. Steps away are untouched,
+ * so the view never sticks.
+ */
+export function towardsActualSize(from: number, to: number, within = 0.04): number {
+  const approaching = Math.abs(to - 1) < Math.abs(from - 1);
+  const crossed = (from - 1) * (to - 1) < 0;
+  return crossed || (approaching && Math.abs(to - 1) < within) ? 1 : to;
+}
+
 export function clampCamera(camera: Camera): Camera {
   const x = Number.isFinite(camera.x) ? camera.x : 0;
   const y = Number.isFinite(camera.y) ? camera.y : 0;

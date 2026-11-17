@@ -7,6 +7,7 @@ import {
   dragFrame,
   frameBeside,
   seedFrames,
+  towardsActualSize,
   zoomCameraAt,
 } from "./canvas.js";
 import { dropTargetAt } from "./drop.js";
@@ -67,6 +68,22 @@ describe("the leader", () => {
     const start = run([add("a"), add("b")]);
     const state = apply(start, { type: "update", panel: "b", changes: { leads: false } });
     expect(state.leader).toBe("a");
+  });
+
+  it("can be named when the focused panel does not lead, and not otherwise", () => {
+    const start = run([add("a"), add("b"), add("c")]);
+    // The focused panel leads, so it is the leader whatever is asked.
+    expect(apply(start, { type: "lead", panel: "a" }).leader).toBe("c");
+    const following = apply(start, {
+      type: "batch",
+      operations: [
+        { type: "update", panel: "c", changes: { leads: false } },
+        { type: "lead", panel: "b" },
+      ],
+    });
+    expect(following.leader).toBe("b");
+    expect(apply(following, { type: "lead", panel: "c" }).leader).toBe("b");
+    expect(apply(following, { type: "lead", panel: "missing" }).leader).toBe("b");
   });
 });
 
@@ -227,6 +244,17 @@ describe("canvas geometry", () => {
     // The plane point under the pointer is the same before and after.
     expect(camera.x + 200 / camera.zoom).toBe(10 + 200);
     expect(camera.y + 100 / camera.zoom).toBe(20 + 100);
+  });
+
+  it("settles on actual size when a zoom reaches it, and never sticks there", () => {
+    expect(towardsActualSize(0.7, 1.1)).toBe(1);
+    expect(towardsActualSize(1.3, 0.9)).toBe(1);
+    expect(towardsActualSize(0.9, 0.98)).toBe(1);
+    expect(towardsActualSize(0.8, 0.9)).toBe(0.9);
+    // Leaving actual size in small steps is never pulled back.
+    expect(towardsActualSize(1, 0.99)).toBe(0.99);
+    expect(towardsActualSize(0.99, 0.98)).toBe(0.98);
+    expect(towardsActualSize(1.01, 1.02)).toBe(1.02);
   });
 
   it("moves and resizes on the grid, down to the smallest pane", () => {

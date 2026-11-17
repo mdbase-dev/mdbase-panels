@@ -92,6 +92,12 @@ function reduce(state: WorkspaceState, operation: Operation): WorkspaceState {
       return activatePanel(state, operation.panel);
     case "focus":
       return focusStack(state, operation.stack);
+    case "lead": {
+      const panel = state.panels[operation.panel];
+      return panel && panel.leads !== false && state.leader !== panel.id
+        ? { ...state, leader: panel.id }
+        : state;
+    }
     case "update": {
       const panel = state.panels[operation.panel];
       return panel

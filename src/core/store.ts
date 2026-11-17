@@ -43,7 +43,7 @@ export interface StoreOptions {
   readonly saveDelay?: number;
 }
 
-const quiet = new Set<Operation["type"]>(["activate", "focus", "setCamera"]);
+const quiet = new Set<Operation["type"]>(["activate", "focus", "lead", "setCamera"]);
 
 /** Holds a workspace, applies operations to it, and tells subscribers. */
 export class WorkspaceStore {
