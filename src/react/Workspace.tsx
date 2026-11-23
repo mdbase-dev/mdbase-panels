@@ -750,6 +750,28 @@ function StackFrame(props: StackFrameProps): JSX.Element | null {
   );
 }
 
+/**
+ * Where a splitter stands, which a focusable separator has to say: a side region's width in
+ * pixels between its limits, or the share of the two panes the splitter divides, as a percentage.
+ */
+function splitterValue(splitter: SplitterLayout): {
+  readonly "aria-valuenow": number;
+  readonly "aria-valuemin": number;
+  readonly "aria-valuemax": number;
+} {
+  if (splitter.kind === "edge") {
+    return {
+      "aria-valuenow": Math.round(splitter.size),
+      "aria-valuemin": Math.round(splitter.min),
+      "aria-valuemax": Math.round(splitter.max),
+    };
+  }
+  const before = splitter.sizes[splitter.index] ?? 0;
+  const after = splitter.sizes[splitter.index + 1] ?? 0;
+  const share = before + after > 0 ? (before / (before + after)) * 100 : 50;
+  return { "aria-valuenow": Math.round(share), "aria-valuemin": 0, "aria-valuemax": 100 };
+}
+
 function Splitter({
   splitter,
   store,
@@ -783,6 +805,7 @@ function Splitter({
       role="separator"
       aria-orientation={horizontal ? "vertical" : "horizontal"}
       aria-label={label}
+      {...splitterValue(splitter)}
       tabIndex={0}
       data-mp-direction={splitter.direction}
       data-mp-kind={splitter.kind}
