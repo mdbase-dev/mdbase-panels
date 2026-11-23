@@ -208,3 +208,6 @@ pnpm typecheck
 pnpm demo        # http://127.0.0.1:5179
 pnpm build       # dist/
 ```
+
+To release, change `version` in `package.json`, merge that, and push a tag `v<version>`. The
+`Publish to npm` workflow checks, builds and publishes it.

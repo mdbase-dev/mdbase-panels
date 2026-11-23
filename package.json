@@ -3,6 +3,18 @@
   "version": "0.3.1",
   "description": "A workspace of panels for the web: tabs, splits and side regions over a layout document, with panels that keep their identity.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mdbase-dev/mdbase-panels.git"
+  },
+  "homepage": "https://github.com/mdbase-dev/mdbase-panels#readme",
+  "bugs": {
+    "url": "https://github.com/mdbase-dev/mdbase-panels/issues"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "packageManager": "pnpm@11.15.1",
   "type": "module",
   "sideEffects": [
     "*.css"
