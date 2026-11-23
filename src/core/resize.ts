@@ -34,21 +34,11 @@ export function resizeSplitter(splitter: SplitterLayout, delta: number): Splitte
       },
     };
   }
-  if (splitter.kind === "edge") {
-    const grow = splitter.side === "left" || splitter.side === "top" ? delta : -delta;
-    const size = Math.min(splitter.max, Math.max(splitter.min, splitter.size + grow));
-    const moved = size - splitter.size;
-    return {
-      moved: splitter.side === "left" || splitter.side === "top" ? moved : -moved,
-      operation: { type: "configureEdge", side: splitter.side, options: { size } },
-    };
-  }
-  if (splitter.basis <= 0) {
-    return null;
-  }
-  const width = Math.max(splitter.min, splitter.width + delta);
+  const grow = splitter.side === "left" || splitter.side === "top" ? delta : -delta;
+  const size = Math.min(splitter.max, Math.max(splitter.min, splitter.size + grow));
+  const moved = size - splitter.size;
   return {
-    moved: width - splitter.width,
-    operation: { type: "setColumnWidth", node: splitter.node, fraction: width / splitter.basis },
+    moved: splitter.side === "left" || splitter.side === "top" ? moved : -moved,
+    operation: { type: "configureEdge", side: splitter.side, options: { size } },
   };
 }

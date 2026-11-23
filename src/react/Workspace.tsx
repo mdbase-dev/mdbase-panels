@@ -16,24 +16,13 @@ import {
 } from "react";
 
 import {
-  boundsOf,
-  cameraToFit,
-  cameraToReveal,
-  canvasDefaults,
-  clampCamera,
   computeLayout,
-  dragFrame,
   dropTargetAt,
   edgeOfStack,
   findStack,
   resizeSplitter,
-  sameCamera,
-  towardsActualSize,
-  zoomCameraAt,
-  type Camera,
   type DropTarget,
   type EdgeSide,
-  type FrameHandle,
   type LayoutMode,
   type LayoutOptions,
   type NodeId,
@@ -53,25 +42,9 @@ import {
 import { defaultFlip, flip, prefersReducedMotion, type FlipOptions, type Visual } from "./flip.js";
 import { Menu, type MenuItem, type MenuState } from "./Menu.js";
 
-/**
- * How a panel is shown on a canvas that is not at actual size.
- * - `picture`: drawn through the canvas's scale and covered, so it can be arranged but not
- *   used. The default, and right for anything that measures itself against the screen.
- * - `scaled`: drawn through the canvas's scale and live. For content that never compares its
- *   own layout with screen positions.
- * - `native`: laid out at the size it has on screen and told the zoom (`PanelInfo.zoom`), so
- *   that it draws itself at that zoom. Nothing scales it, so everything in it measures true.
- */
-export type PanelZoom = "picture" | "scaled" | "native";
-
 export interface PanelInfo {
   /** Whether the panel is on screen. Hidden panels stay mounted. */
   readonly visible: boolean;
-  /**
-   * The zoom a `native` panel should draw itself at: the canvas's, once a zoom gesture has
-   * settled. 1 everywhere else.
-   */
-  readonly zoom: number;
   /** Whether it is the active panel of the focused stack. */
   readonly focused: boolean;
   readonly stack: NodeId;
@@ -106,13 +79,6 @@ export interface WorkspaceLabels {
   readonly closeTab: string;
   readonly overview: string;
   readonly show: (title: string) => string;
-  readonly columns: string;
-  /** The canvas view: its zoom controls, and the handle that moves a pane. */
-  readonly zoomIn: string;
-  readonly zoomOut: string;
-  readonly zoomReset: string;
-  readonly zoomFit: string;
-  readonly movePane: string;
 }
 
 const defaultLabels: WorkspaceLabels = {
@@ -122,12 +88,6 @@ const defaultLabels: WorkspaceLabels = {
   closeTab: "Close",
   overview: "All open panels",
   show: (title) => `Show ${title}`,
-  columns: "Scroll between columns",
-  zoomIn: "Zoom in",
-  zoomOut: "Zoom out",
-  zoomReset: "Actual size",
-  zoomFit: "Show every pane",
-  movePane: "Move pane (arrow keys move it, Shift and arrow keys resize it)",
 };
 
 export interface WorkspaceProps {
@@ -141,8 +101,6 @@ export interface WorkspaceProps {
   /** Shown in the main area when nothing is open there. */
   readonly renderEmpty?: () => ReactNode;
   readonly tabMenu?: (panel: PanelDescriptor, info: TabInfo) => readonly MenuItem[];
-  /** How each panel is shown on a zoomed canvas. Defaults to `picture` for every panel. */
-  readonly zoom?: (panel: PanelDescriptor) => PanelZoom;
   /** A tab's accessible name and tooltip. Defaults to its title. */
   readonly tabTitle?: (panel: PanelDescriptor) => string;
   /**
@@ -172,9 +130,6 @@ interface DragState {
   readonly target: DropTarget | null;
 }
 
-const quietResize = new Set(["resize", "setColumnWidth", "setFrame", "setCamera"]);
-const frameHandles = ["n", "s", "e", "w", "ne", "nw", "se", "sw"] as const;
-
 function rectStyle(rect: Rect): CSSProperties {
   return { left: rect.x, top: rect.y, width: rect.width, height: rect.height };
 }
@@ -186,9 +141,6 @@ export function Workspace(props: WorkspaceProps): JSX.Element {
   const labels = useMemo(() => ({ ...defaultLabels, ...props.labels }), [props.labels]);
   const uid = useId();
   const root = useRef<HTMLDivElement>(null);
-  const scroller = useRef<HTMLDivElement>(null);
-  const content = useRef<HTMLDivElement>(null);
-  const zoomLabel = useRef<HTMLSpanElement>(null);
   const [size, setSize] = useState<Size | null>(null);
   const [drag, setDrag] = useState<DragState | null>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
@@ -259,21 +211,12 @@ export function Workspace(props: WorkspaceProps): JSX.Element {
   };
 
   const animate = useRef(false);
-  const reveal = useRef(true);
-  /** When the pointer last went down on something that lives on the canvas. */
-  const canvasPress = useRef(-1e9);
   const focusTab = useRef<PanelId | null>(null);
   const announce = props.announce;
   useLayoutEffect(
     () =>
       store.subscribe((change) => {
         animate.current = change.animate;
-        // Something picked with the pointer on the canvas is already in view where the user
-        // wants it; only changes made some other way bring their pane into view.
-        const picked = performance.now() - canvasPress.current < 400;
-        if (!quietResize.has(change.operation.type) && !picked) {
-          reveal.current = true;
-        }
         const text = announce?.(change);
         if (text) {
           setAnnouncement(text);
@@ -294,191 +237,30 @@ export function Workspace(props: WorkspaceProps): JSX.Element {
   if (lastOverview.current !== overview) {
     lastOverview.current = overview;
     animate.current = true;
-    reveal.current = true;
   }
 
-  // The canvas camera. `live` is what is drawn; it runs ahead of the state while the user pans
-  // or zooms, and is written back when the gesture settles. `goal` is where it is heading.
-  const live = useRef<Camera>(state.canvas.camera);
-  const goal = useRef<Camera>(state.canvas.camera);
-  const synced = useRef<Camera>(state.canvas.camera);
-  const cameraFrame = useRef(0);
-  const cameraTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
-  /** The zoom the state holds: what `native` panels are laid out for. */
-  const settledZoom = useRef(state.canvas.camera.zoom);
-  settledZoom.current = state.canvas.camera.zoom;
   const motion = props.motion;
-  const paint = useCallback((): void => {
-    const element = content.current;
-    const main = layoutRef.current?.main;
-    if (!element || !main) {
-      return;
-    }
-    const { x, y, zoom } = live.current;
-    let grid = 24 * zoom;
-    while (grid < 14) {
-      grid *= 2;
-    }
-    // At actual size the plane sits on whole pixels, so text in a pane stays sharp.
-    const place = (value: number): number => (zoom === 1 ? Math.round(value) : value);
-    root.current?.toggleAttribute("data-mp-zoomed", zoom !== 1);
-    // Mid-gesture a native panel is still laid out for the zoom before, and so is scaled.
-    root.current?.toggleAttribute("data-mp-zooming", zoom !== settledZoom.current);
-    element.style.setProperty("--mp-zoom", String(zoom));
-    element.style.setProperty("--mp-cam-x", `${String(place(main.x - x * zoom))}px`);
-    element.style.setProperty("--mp-cam-y", `${String(place(main.y - y * zoom))}px`);
-    element.style.setProperty("--mp-pan-x", `${String(-x * zoom)}px`);
-    element.style.setProperty("--mp-pan-y", `${String(-y * zoom)}px`);
-    element.style.setProperty("--mp-grid", `${String(grid)}px`);
-    if (zoomLabel.current) {
-      zoomLabel.current.textContent = `${String(Math.round(zoom * 100))}%`;
-    }
-  }, []);
-  const commitCamera = useCallback((): void => {
-    clearTimeout(cameraTimer.current);
-    cameraTimer.current = undefined;
-    store.dispatch({ type: "setCamera", camera: goal.current }, { history: "skip", animate: false });
-  }, [store]);
-  /** Point the camera somewhere, gliding there unless told to jump. */
-  const lookAt = useCallback(
-    (camera: Camera, options: { glide?: boolean; commit?: "now" | "soon" | "no" } = {}): void => {
-      const target = clampCamera(camera);
-      cancelAnimationFrame(cameraFrame.current);
-      goal.current = target;
-      const from = live.current;
-      const glide = (options.glide ?? true) && motion !== false && !prefersReducedMotion();
-      if (!glide || sameCamera(from, target)) {
-        live.current = target;
-        paint();
-      } else {
-        const started = performance.now();
-        const duration = (motion ? motion.duration : undefined) ?? defaultFlip.duration;
-        const step = (now: number): void => {
-          const t = Math.min(1, (now - started) / duration);
-          const eased = 1 - (1 - t) ** 3;
-          // Zoom is interpolated by ratio, so the pace looks even at every scale.
-          const zoom = from.zoom * (target.zoom / from.zoom) ** eased;
-          live.current =
-            t >= 1
-              ? target
-              : { x: from.x + (target.x - from.x) * eased, y: from.y + (target.y - from.y) * eased, zoom };
-          paint();
-          if (t < 1) {
-            cameraFrame.current = requestAnimationFrame(step);
-          }
-        };
-        cameraFrame.current = requestAnimationFrame(step);
-      }
-      const commit = options.commit ?? "now";
-      if (commit === "now") {
-        commitCamera();
-      } else if (commit === "soon") {
-        clearTimeout(cameraTimer.current);
-        cameraTimer.current = setTimeout(commitCamera, 160);
-      }
-    },
-    [commitCamera, motion, paint],
-  );
-  useEffect(
-    () => () => {
-      cancelAnimationFrame(cameraFrame.current);
-      if (cameraTimer.current !== undefined) {
-        commitCamera();
-      }
-    },
-    [commitCamera],
-  );
-
-  const visuals = useRef(new Map<string, Visual & { pinned: boolean; plane: boolean }>());
+  const visuals = useRef(new Map<string, Visual>());
   useLayoutEffect(() => {
-    const view = scroller.current;
-    if (!layout || !view) {
+    if (!layout) {
       return;
     }
-    // A camera set from outside (a command, a loaded workspace) is followed; one this view
-    // wrote itself is already where `goal` points.
-    if (state.canvas.camera !== synced.current) {
-      synced.current = state.canvas.camera;
-      if (!sameCamera(state.canvas.camera, goal.current)) {
-        lookAt(state.canvas.camera, { glide: layout.mode === "canvas", commit: "no" });
-      }
-    }
-    if (layout.mode === "canvas" && reveal.current) {
-      const focused = layout.stacks.find(({ focused: has, pinned }) => has && !pinned);
-      const shown = focused ? cameraToReveal(goal.current, focused.rect, layout.main) : goal.current;
-      if (shown !== goal.current) {
-        lookAt(shown, { commit: "soon" });
-      }
-    }
-    paint();
-    const before = view.scrollLeft;
-    if (layout.mode === "columns" && reveal.current) {
-      const focused = layout.stacks.find(({ focused: has, pinned }) => has && !pinned);
-      if (focused) {
-        const left = focused.rect.x - layout.main.x;
-        const right = focused.rect.x + focused.rect.width - layout.main.x - layout.main.width;
-        if (before > left) {
-          view.scrollLeft = left;
-        } else if (before < right) {
-          view.scrollLeft = right;
-        }
-      }
-    }
-    reveal.current = false;
-    const after = view.scrollLeft;
-    // Boxes on the canvas are recorded in plane pixels, so panning never makes them stale.
-    const canvas = layout.mode === "canvas";
-    const next = new Map<string, Visual & { pinned: boolean; plane: boolean }>();
+    const next = new Map<string, Visual>();
     for (const stack of layout.stacks) {
-      next.set(`s:${stack.id}`, {
-        ...stack.rect,
-        scale: 1,
-        visible: true,
-        pinned: stack.pinned,
-        plane: canvas && !stack.pinned,
-      });
+      next.set(`s:${stack.id}`, { ...stack.rect, scale: 1, visible: true });
     }
     for (const panel of layout.panels) {
-      next.set(`p:${panel.id}`, {
-        ...panel.rect,
-        scale: panel.scale,
-        visible: panel.visible,
-        pinned: panel.pinned,
-        plane: canvas && !panel.pinned,
-      });
+      next.set(`p:${panel.id}`, { ...panel.rect, scale: panel.scale, visible: panel.visible });
     }
     if (animate.current && motion !== false && !prefersReducedMotion()) {
       const options = { ...defaultFlip, ...motion };
-      const { x: camX, y: camY, zoom } = live.current;
-      const originX = layout.main.x - camX * zoom;
-      const originY = layout.main.y - camY * zoom;
       for (const [key, to] of next) {
         const element = elements.current.get(key);
-        const was = visuals.current.get(key);
-        if (!element) {
-          continue;
+        if (element) {
+          flip(element, visuals.current.get(key), to, options);
         }
-        // The animation plays in the element's own space, so where it was is restated there:
-        // through the camera when it is moving onto or off the canvas.
-        let from: Visual | undefined = was && { ...was, x: was.pinned || was.plane ? was.x : was.x - before };
-        if (from && was && was.plane !== to.plane) {
-          from = to.plane
-            ? {
-                ...from,
-                x: (from.x - originX) / zoom,
-                y: (from.y - originY) / zoom,
-                scale: from.scale / zoom,
-              }
-            : {
-                ...from,
-                x: from.x * zoom + originX,
-                y: from.y * zoom + originY,
-                scale: from.scale * zoom,
-              };
-        }
-        flip(element, from, { ...to, x: to.pinned || to.plane ? to.x : to.x - after }, options);
       }
     }
     animate.current = false;
@@ -529,16 +311,7 @@ export function Workspace(props: WorkspaceProps): JSX.Element {
         store.dispatch({ type: "focus", stack }, { animate: false });
       }
     };
-    const pointer = (event: PointerEvent): void => {
-      if (
-        layoutRef.current?.mode === "canvas" &&
-        event.target instanceof Element &&
-        event.target.closest(".mp-pin:not([data-mp-pinned])")
-      ) {
-        canvasPress.current = performance.now();
-      }
-      focusFrom(event.target);
-    };
+    const pointer = (event: PointerEvent): void => focusFrom(event.target);
     const focusIn = (event: FocusEvent): void => focusFrom(event.target);
     const blur = (): void => {
       // Focus moving into an iframe shows up here as the window losing focus.
@@ -560,189 +333,7 @@ export function Workspace(props: WorkspaceProps): JSX.Element {
     [tabTitle],
   );
 
-  const beginDrag = useTabDrag({ store, root, scroller, layoutRef, setDrag, titleOf, camera: live });
-
-  // Wheel pans the canvas and Ctrl or Cmd with the wheel (a pinch on a trackpad) zooms about
-  // the pointer. The focused pane keeps its own scrolling: a wheel over its content is left
-  // alone, and over an embedded frame it never arrives here at all.
-  useEffect(() => {
-    const view = root.current;
-    if (!view) {
-      return;
-    }
-    const wheel = (event: WheelEvent): void => {
-      const current = layoutRef.current;
-      const target = event.target;
-      if (current?.mode !== "canvas" || !(target instanceof Element)) {
-        return;
-      }
-      const zooming = event.ctrlKey || event.metaKey;
-      if (event.defaultPrevented || target.closest(".mp-menu, .mp-zoom")) {
-        return;
-      }
-      // Zooming works everywhere on the canvas (a pinch must never zoom the whole page);
-      // plain scrolling belongs to whatever panel the pointer is over.
-      if (target.closest("[data-mp-edge]") || (!zooming && target.closest(".mp-panel"))) {
-        return;
-      }
-      const bounds = view.getBoundingClientRect();
-      const point = {
-        x: event.clientX - bounds.left - current.main.x,
-        y: event.clientY - bounds.top - current.main.y,
-      };
-      if (point.x < 0 || point.y < 0 || point.x > current.main.width || point.y > current.main.height) {
-        return;
-      }
-      event.preventDefault();
-      const unit = event.deltaMode === 1 ? 16 : event.deltaMode === 2 ? current.main.height : 1;
-      const camera = goal.current;
-      if (zooming) {
-        // A pinch arrives as many small steps; a mouse wheel as one large one per notch, which
-        // is held to about a quarter so that a notch does not throw the view across the canvas.
-        const step = Math.max(-30, Math.min(30, event.deltaY * unit));
-        const factor = Math.exp(-step * 0.01);
-        lookAt(zoomCameraAt(camera, point, towardsActualSize(camera.zoom, camera.zoom * factor)), {
-          glide: false,
-          commit: "soon",
-        });
-      } else {
-        lookAt(
-          {
-            ...camera,
-            x: camera.x + (event.deltaX * unit) / camera.zoom,
-            y: camera.y + (event.deltaY * unit) / camera.zoom,
-          },
-          { glide: false, commit: "soon" },
-        );
-      }
-    };
-    view.addEventListener("wheel", wheel, { passive: false });
-    return () => view.removeEventListener("wheel", wheel);
-  }, [lookAt]);
-
-  /** Drag open ground (or a covered pane) to pan. A press that does not move is a click. */
-  const beginPan = useCallback(
-    (event: ReactPointerEvent, click?: () => void): void => {
-      if (event.button !== 0 && event.button !== 1) {
-        return;
-      }
-      event.preventDefault();
-      const pointerId = event.pointerId;
-      const origin = { x: event.clientX, y: event.clientY };
-      const start = goal.current;
-      const button = event.button;
-      let panning = false;
-      const move = (next: PointerEvent): void => {
-        if (next.pointerId !== pointerId) {
-          return;
-        }
-        const dx = next.clientX - origin.x;
-        const dy = next.clientY - origin.y;
-        if (!panning && Math.hypot(dx, dy) < 4) {
-          return;
-        }
-        if (!panning) {
-          panning = true;
-          root.current?.setAttribute("data-mp-panning", "");
-        }
-        lookAt({ ...start, x: start.x - dx / start.zoom, y: start.y - dy / start.zoom }, { glide: false, commit: "no" });
-      };
-      const finish = (next: PointerEvent): void => {
-        if (next.pointerId !== pointerId) {
-          return;
-        }
-        document.removeEventListener("pointermove", move, true);
-        document.removeEventListener("pointerup", finish, true);
-        document.removeEventListener("pointercancel", finish, true);
-        root.current?.removeAttribute("data-mp-panning");
-        if (panning) {
-          commitCamera();
-        } else if (next.type === "pointerup" && button === 0) {
-          click?.();
-        }
-      };
-      document.addEventListener("pointermove", move, true);
-      document.addEventListener("pointerup", finish, true);
-      document.addEventListener("pointercancel", finish, true);
-    },
-    [commitCamera, lookAt],
-  );
-
-  /** Move a pane on the canvas, or resize it from one of its sides or corners. */
-  const beginFrame = useCallback(
-    (event: ReactPointerEvent, stack: StackLayout, handle: FrameHandle): void => {
-      if (event.button !== 0) {
-        return;
-      }
-      event.preventDefault();
-      event.stopPropagation();
-      canvasPress.current = performance.now();
-      store.dispatch({ type: "focus", stack: stack.id }, { animate: false });
-      const pointerId = event.pointerId;
-      const origin = { x: event.clientX, y: event.clientY };
-      const start = stack.rect;
-      root.current?.setAttribute("data-mp-resizing", handle === "move" ? "move" : `frame-${handle}`);
-      const move = (next: PointerEvent): void => {
-        if (next.pointerId !== pointerId) {
-          return;
-        }
-        const zoom = live.current.zoom;
-        const frame = dragFrame(start, handle, (next.clientX - origin.x) / zoom, (next.clientY - origin.y) / zoom);
-        store.dispatch({ type: "setFrame", stack: stack.id, frame }, { history: "merge", animate: false });
-      };
-      const finish = (next: PointerEvent): void => {
-        if (next.pointerId !== pointerId) {
-          return;
-        }
-        document.removeEventListener("pointermove", move, true);
-        document.removeEventListener("pointerup", finish, true);
-        document.removeEventListener("pointercancel", finish, true);
-        store.endMerge();
-        root.current?.removeAttribute("data-mp-resizing");
-      };
-      document.addEventListener("pointermove", move, true);
-      document.addEventListener("pointerup", finish, true);
-      document.addEventListener("pointercancel", finish, true);
-    },
-    [store],
-  );
-
-  const zoomBy = (factor: number): void => {
-    const main = layoutRef.current?.main;
-    if (main) {
-      const camera = goal.current;
-      // Steps land on round percentages.
-      const zoom = Math.round(camera.zoom * factor * 20) / 20;
-      lookAt(zoomCameraAt(camera, { x: main.width / 2, y: main.height / 2 }, zoom));
-    }
-  };
-  const zoomReset = (): void => {
-    const main = layoutRef.current?.main;
-    if (main) {
-      lookAt(zoomCameraAt(goal.current, { x: main.width / 2, y: main.height / 2 }, 1));
-    }
-  };
-  const zoomFit = (): void => {
-    const current = layoutRef.current;
-    const bounds = current ? boundsOf(current.stacks.filter(({ pinned }) => !pinned).map(({ rect }) => rect)) : null;
-    if (current && bounds) {
-      lookAt(cameraToFit(bounds, current.main));
-    }
-  };
-  /** Bring a pane to actual size, where it can be worked in: centred, or from its corner if it is larger than the view. */
-  const zoomTo = (stack: StackLayout): void => {
-    const main = layoutRef.current?.main;
-    if (main) {
-      const { rect } = stack;
-      const along = (start: number, length: number, room: number): number =>
-        length + 48 > room ? start - 24 : start + length / 2 - room / 2;
-      lookAt({
-        x: along(rect.x, rect.width, main.width),
-        y: along(rect.y, rect.height, main.height),
-        zoom: 1,
-      });
-    }
-  };
+  const beginDrag = useTabDrag({ store, root, layoutRef, setDrag, titleOf });
 
   const overviewChange = props.onOverviewChange;
   useEffect(() => {
@@ -766,208 +357,101 @@ export function Workspace(props: WorkspaceProps): JSX.Element {
     (layout?.stacks ?? []).flatMap(({ id }) => findStack(state, id)?.panels ?? []),
   );
   const empty = layout && mode !== "overview" && !layout.stacks.some(({ edge }) => !edge) && !state.root;
-  const zoomOf = props.zoom;
-  const zoomKind = (panel: PanelDescriptor | undefined): PanelZoom =>
-    (panel && zoomOf?.(panel)) ?? "picture";
-  const canvasZoom = mode === "canvas" ? state.canvas.camera.zoom : 1;
 
   return (
     <div
       ref={root}
       className={`mp-workspace${props.className ? ` ${props.className}` : ""}`}
       data-mp-mode={mode}
-      data-mp-view={state.view}
       data-mp-dragging={drag ? "" : undefined}
       role="group"
       aria-label={labels.workspace}
     >
-      <div ref={scroller} className="mp-scroller" data-mp-scrolls={mode === "columns" || undefined}>
-        <div
-          ref={content}
-          className="mp-content"
-          style={{ width: layout ? Math.max(layout.contentWidth, layout.size.width) : "100%" }}
-        >
-          {layout && mode === "canvas" ? (
-            <Pin pinned layer={0}>
-              <div
-                className="mp-canvas"
-                style={rectStyle(layout.main)}
-                onPointerDown={(event) => beginPan(event)}
-              />
-            </Pin>
-          ) : null}
-          {layout?.stacks.map((stack) => (
-            <Pin key={stack.id} pinned={stack.pinned} layer={stack.pinned ? undefined : stack.layer}>
-              <StackFrame
-                elementRef={registrar(`s:${stack.id}`)}
-                layout={stack}
-                state={state}
+      {layout?.stacks.map((stack) => (
+        <StackFrame
+          key={stack.id}
+          elementRef={registrar(`s:${stack.id}`)}
+          layout={stack}
+          state={state}
+          mode={mode}
+          labels={labels}
+          tabId={tabId}
+          panelDomId={panelDomId}
+          titleOf={titleOf}
+          renderTab={props.renderTab}
+          renderStackActions={props.renderStackActions}
+          tabMenu={props.tabMenu}
+          canClose={props.canClose}
+          close={close}
+          store={store}
+          beginDrag={beginDrag}
+          dragging={drag?.panel ?? null}
+          setMenu={setMenu}
+          focusTab={focusTab}
+        />
+      ))}
+      {layout
+        ? order.current.map((id) => {
+            const panel = state.panels[id];
+            const placed = panelLayouts.get(id);
+            if (!panel || !placed) {
+              return null;
+            }
+            const stack = stackLayouts.get(placed.stack);
+            return (
+              <PanelHost
+                key={id}
+                elementRef={registrar(`p:${id}`)}
+                panel={panel}
+                layout={placed}
                 mode={mode}
-                labels={labels}
-                tabId={tabId}
-                panelDomId={panelDomId}
-                titleOf={titleOf}
-                renderTab={props.renderTab}
-                renderStackActions={props.renderStackActions}
-                tabMenu={props.tabMenu}
-                canClose={props.canClose}
-                close={close}
-                store={store}
-                beginDrag={beginDrag}
-                beginFrame={beginFrame}
-                zoomTo={zoomTo}
-                dragging={drag?.panel ?? null}
-                setMenu={setMenu}
-                focusTab={focusTab}
+                focused={placed.visible && state.focus === placed.stack}
+                edge={stack?.edge ?? edgeOfStack(state, placed.stack)}
+                domId={panelDomId(id)}
+                labelledBy={tabbed.has(id) ? tabId(id) : undefined}
+                label={titleOf(panel)}
+                renderPanel={props.renderPanel}
               />
-            </Pin>
-          ))}
-          {layout
-            ? order.current.map((id) => {
-                const panel = state.panels[id];
-                const placed = panelLayouts.get(id);
-                if (!panel || !placed) {
-                  return null;
-                }
-                const stack = stackLayouts.get(placed.stack);
-                return (
-                  <Pin key={id} pinned={placed.pinned} layer={placed.pinned ? undefined : placed.layer}>
-                    <PanelHost
-                      elementRef={registrar(`p:${id}`)}
-                      panel={panel}
-                      layout={placed}
-                      mode={mode}
-                      focused={placed.visible && state.focus === placed.stack}
-                      edge={stack?.edge ?? edgeOfStack(state, placed.stack)}
-                      domId={panelDomId(id)}
-                      zoom={!placed.pinned && zoomKind(panel) === "native" ? canvasZoom : 1}
-                      labelledBy={tabbed.has(id) ? tabId(id) : undefined}
-                      label={titleOf(panel)}
-                      renderPanel={props.renderPanel}
-                    />
-                  </Pin>
-                );
-              })
-            : null}
-          {layout?.splitters.map((splitter) => (
-            <Pin key={splitter.id} pinned={splitter.pinned}>
-              <Splitter splitter={splitter} store={store} root={root} label={labels.resize} />
-            </Pin>
-          ))}
-          {mode === "canvas"
-            ? layout?.stacks
-                .filter(({ pinned }) => !pinned)
-                .map((stack) => (
-                  <Pin key={`frame:${stack.id}`} pinned={false} layer={stack.layer}>
-                    {/*
-                      A pane that is not in use is covered: a click picks it, a drag or the wheel
-                      moves the canvas, and nothing inside it can swallow either. Away from
-                      actual size the pane in use is covered too, unless its panel says it can
-                      be used zoomed (see the stylesheet).
-                    */}
-                    <div
-                      className="mp-cover"
-                      data-mp-focused={stack.focused || undefined}
-                      data-mp-zoom={zoomKind(state.panels[findStack(state, stack.id)?.active ?? ""])}
-                      style={rectStyle(stack.body)}
-                      onPointerDown={(event) => {
-                        const cover = event.currentTarget;
-                        beginPan(event, () => {
-                          canvasPress.current = performance.now();
-                          // Picking a pane uncovers it. The cover stays for the length of a
-                          // double click, so that the second click is not taken by the content.
-                          cover.setAttribute("data-mp-picked", "");
-                          window.setTimeout(() => cover.removeAttribute("data-mp-picked"), 400);
-                          store.dispatch({ type: "focus", stack: stack.id }, { animate: false });
-                        });
-                      }}
-                      onDoubleClick={() => zoomTo(stack)}
-                    />
-                    <div className="mp-frame-handles" style={rectStyle(stack.rect)} aria-hidden="true">
-                      {frameHandles.map((handle) => (
-                        <div
-                          key={handle}
-                          className="mp-handle"
-                          data-mp-handle={handle}
-                          onPointerDown={(event) => beginFrame(event, stack, handle)}
-                        />
-                      ))}
-                    </div>
-                  </Pin>
-                ))
-            : null}
-          {empty && layout ? (
-            <Pin pinned>
-              <div className="mp-empty" style={rectStyle(layout.main)}>
-                {props.renderEmpty?.()}
-              </div>
-            </Pin>
-          ) : null}
-          {mode === "overview" && layout ? (
-            <Pin pinned>
-              <div className="mp-overview" role="list" aria-label={labels.overview}>
-                {layout.cards.map((card) => {
-                  const panel = state.panels[card.panel];
-                  if (!panel) {
-                    return null;
-                  }
-                  const title = titleOf(panel);
-                  return (
-                    <div key={card.panel} role="listitem" className="mp-card" style={rectStyle(card.rect)}>
-                      <button
-                        type="button"
-                        className="mp-card-target"
-                        aria-label={labels.show(title)}
-                        onClick={() => {
-                          store.dispatch({ type: "activate", panel: card.panel });
-                          props.onOverviewChange?.(false);
-                        }}
-                      >
-                        <span className="mp-card-label" style={{ height: card.label.height }}>
-                          {title}
-                        </span>
-                      </button>
-                    </div>
-                  );
-                })}
-              </div>
-            </Pin>
-          ) : null}
-          {drag?.target ? (
-            <Pin pinned={drag.target.pinned} layer={mode === "canvas" && !drag.target.pinned ? 9000 : undefined}>
-              <div className="mp-drop" style={rectStyle(drag.target.indicator)} />
-            </Pin>
-          ) : null}
-        </div>
-      </div>
-      {layout && mode === "columns" && layout.contentWidth > layout.size.width + 1 ? (
-        <ColumnsBar layout={layout} scroller={scroller} label={labels.columns} />
-      ) : null}
-      {layout && mode === "canvas" ? (
-        <div className="mp-zoom" style={{ right: layout.size.width - layout.main.x - layout.main.width + 10 }}>
-          <button type="button" aria-label={labels.zoomOut} title={labels.zoomOut} onClick={() => zoomBy(1 / 1.25)}>
-            −
-          </button>
-          <button type="button" aria-label={labels.zoomReset} title={labels.zoomReset} onClick={zoomReset}>
-            <span ref={zoomLabel}>{`${String(Math.round(state.canvas.camera.zoom * 100))}%`}</span>
-          </button>
-          <button type="button" aria-label={labels.zoomIn} title={labels.zoomIn} onClick={() => zoomBy(1.25)}>
-            +
-          </button>
-          <button type="button" aria-label={labels.zoomFit} title={labels.zoomFit} onClick={zoomFit}>
-            <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-              <path
-                d="M2 6V2h4M10 2h4v4M14 10v4h-4M6 14H2v-4"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.6"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-              />
-            </svg>
-          </button>
+            );
+          })
+        : null}
+      {layout?.splitters.map((splitter) => (
+        <Splitter key={splitter.id} splitter={splitter} store={store} root={root} label={labels.resize} />
+      ))}
+      {empty && layout ? (
+        <div className="mp-empty" style={rectStyle(layout.main)}>
+          {props.renderEmpty?.()}
         </div>
       ) : null}
+      {mode === "overview" && layout ? (
+        <div className="mp-overview" role="list" aria-label={labels.overview}>
+          {layout.cards.map((card) => {
+            const panel = state.panels[card.panel];
+            if (!panel) {
+              return null;
+            }
+            const title = titleOf(panel);
+            return (
+              <div key={card.panel} role="listitem" className="mp-card" style={rectStyle(card.rect)}>
+                <button
+                  type="button"
+                  className="mp-card-target"
+                  aria-label={labels.show(title)}
+                  onClick={() => {
+                    store.dispatch({ type: "activate", panel: card.panel });
+                    props.onOverviewChange?.(false);
+                  }}
+                >
+                  <span className="mp-card-label" style={{ height: card.label.height }}>
+                    {title}
+                  </span>
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+      {drag?.target ? <div className="mp-drop" style={rectStyle(drag.target.indicator)} /> : null}
       {/* Shown while dragging or resizing, so that no embedded frame swallows the pointer. */}
       <div className="mp-shield" />
       {drag ? (
@@ -983,31 +467,6 @@ export function Workspace(props: WorkspaceProps): JSX.Element {
   );
 }
 
-/**
- * A zero-size anchor. Pinned anchors stick to the viewport while the main area scrolls beneath
- * them; switching between the two is a style change, so the content inside is never moved.
- */
-function Pin({
-  pinned,
-  layer,
-  children,
-}: {
-  readonly pinned: boolean;
-  /** Drawing order among anchors, for the canvas, where panes overlap. */
-  readonly layer?: number | undefined;
-  readonly children: ReactNode;
-}): JSX.Element {
-  return (
-    <div
-      className="mp-pin"
-      data-mp-pinned={pinned || undefined}
-      style={layer === undefined || (layer === 0 && !pinned) ? undefined : { zIndex: layer }}
-    >
-      {children}
-    </div>
-  );
-}
-
 interface PanelHostProps {
   readonly elementRef: (element: HTMLElement | null) => void;
   readonly panel: PanelDescriptor;
@@ -1016,8 +475,6 @@ interface PanelHostProps {
   readonly focused: boolean;
   readonly edge: EdgeSide | null;
   readonly domId: string;
-  /** The zoom the panel lays itself out for; 1 unless it is `native` on a zoomed canvas. */
-  readonly zoom: number;
   readonly labelledBy: string | undefined;
   readonly label: string;
   readonly renderPanel: WorkspaceProps["renderPanel"];
@@ -1040,40 +497,21 @@ const PanelHost = memo(function PanelHost(props: PanelHostProps): JSX.Element {
       data-mp-visible={layout.visible || undefined}
       data-mp-focused={props.focused || undefined}
       data-mp-edge={props.edge ?? undefined}
-      data-mp-native={props.zoom === 1 ? undefined : ""}
       inert={!interactive}
       style={{
         ...rectStyle(layout.rect),
         transform: layout.scale === 1 ? undefined : `scale(${String(layout.scale)})`,
       }}
     >
-      {/*
-        A native panel is laid out at its size on screen and scaled back to fit its box, so
-        that the canvas's scale and this one cancel: its content is never drawn through a scale.
-      */}
-      <div
-        className="mp-panel-body"
-        style={
-          props.zoom === 1
-            ? undefined
-            : {
-                width: layout.rect.width * props.zoom,
-                height: layout.rect.height * props.zoom,
-                transform: `scale(${String(1 / props.zoom)})`,
-              }
-        }
-      >
-        <PanelContent
-          panel={panel}
-          visible={layout.visible}
-          zoom={props.zoom}
-          focused={props.focused}
-          stack={layout.stack}
-          edge={props.edge}
-          mode={mode}
-          renderPanel={props.renderPanel}
-        />
-      </div>
+      <PanelContent
+        panel={panel}
+        visible={layout.visible}
+        focused={props.focused}
+        stack={layout.stack}
+        edge={props.edge}
+        mode={mode}
+        renderPanel={props.renderPanel}
+      />
     </div>
   );
 });
@@ -1106,8 +544,6 @@ interface StackFrameProps {
   readonly close: (panels: readonly PanelId[]) => void;
   readonly store: WorkspaceStore;
   readonly beginDrag: (event: ReactPointerEvent, panel: PanelDescriptor) => void;
-  readonly beginFrame: (event: ReactPointerEvent, stack: StackLayout, handle: FrameHandle) => void;
-  readonly zoomTo: (stack: StackLayout) => void;
   readonly dragging: PanelId | null;
   readonly setMenu: (menu: MenuState | null) => void;
   readonly focusTab: { current: PanelId | null };
@@ -1205,20 +641,6 @@ function StackFrame(props: StackFrameProps): JSX.Element | null {
     }
   };
   const activePanel = stack.active ? (state.panels[stack.active] ?? null) : null;
-  const floating = props.mode === "canvas" && !layout.pinned;
-  const nudge = (event: KeyboardEvent<HTMLDivElement>): void => {
-    const step = canvasDefaults.grid * 4;
-    const dx = event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0;
-    const dy = event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0;
-    if (dx || dy) {
-      event.preventDefault();
-      store.dispatch({
-        type: "setFrame",
-        stack: stack.id,
-        frame: dragFrame(layout.rect, event.shiftKey ? "se" : "move", dx, dy),
-      });
-    }
-  };
   return (
     <div
       ref={props.elementRef}
@@ -1234,40 +656,13 @@ function StackFrame(props: StackFrameProps): JSX.Element | null {
         className="mp-header"
         style={{ height: layout.header.height }}
         hidden={layout.header.height === 0}
-        onPointerDown={(event) => {
-          // On the canvas the bare part of a tab strip is the pane's handle.
-          const target = event.target as Element;
-          if (floating && (target === event.currentTarget || target === strip.current)) {
-            props.beginFrame(event, layout, "move");
-          }
-        }}
-        onDoubleClick={(event) => {
-          const target = event.target as Element;
-          if (floating && (target === event.currentTarget || target === strip.current)) {
-            props.zoomTo(layout);
-          }
-        }}
       >
-        {floating ? (
-          <div
-            className="mp-grip"
-            role="button"
-            tabIndex={0}
-            aria-label={props.labels.movePane}
-            title={props.labels.movePane}
-            onPointerDown={(event) => props.beginFrame(event, layout, "move")}
-            onKeyDown={nudge}
-          />
-        ) : null}
         <div
           ref={strip}
           className="mp-tabs"
           role="tablist"
           aria-label={props.labels.tabs}
           onWheel={(event) => {
-            if (floating) {
-              return;
-            }
             if (event.deltaY && !event.deltaX) {
               event.currentTarget.scrollLeft += event.deltaY;
             }
@@ -1426,94 +821,12 @@ function Splitter({
   );
 }
 
-/** A strip showing the columns and which of them are on screen. Drag or click it to scroll. */
-function ColumnsBar({
-  layout,
-  scroller,
-  label,
-}: {
-  readonly layout: WorkspaceLayout;
-  readonly scroller: { readonly current: HTMLDivElement | null };
-  readonly label: string;
-}): JSX.Element {
-  const thumb = useRef<HTMLDivElement>(null);
-  const track = useRef<HTMLDivElement>(null);
-  const scrollable = layout.contentWidth - layout.size.width;
-  const total = layout.main.width + scrollable;
-  useLayoutEffect(() => {
-    const view = scroller.current;
-    const update = (): void => {
-      if (thumb.current && view) {
-        thumb.current.style.left = `${String((view.scrollLeft / total) * 100)}%`;
-        thumb.current.style.width = `${String((layout.main.width / total) * 100)}%`;
-      }
-    };
-    update();
-    view?.addEventListener("scroll", update, { passive: true });
-    return () => view?.removeEventListener("scroll", update);
-  }, [layout.main.width, scroller, total]);
-  const scrollTo = (clientX: number): void => {
-    const bounds = track.current?.getBoundingClientRect();
-    const view = scroller.current;
-    if (bounds && view) {
-      const centre = ((clientX - bounds.left) / bounds.width) * total;
-      view.scrollLeft = centre - layout.main.width / 2;
-    }
-  };
-  const columns = layout.stacks.filter(({ pinned }) => !pinned);
-  return (
-    <div
-      className="mp-columns-bar"
-      style={{ left: layout.main.x, width: layout.main.width }}
-      role="scrollbar"
-      aria-label={label}
-      aria-orientation="horizontal"
-      aria-controls={undefined}
-      aria-valuemin={0}
-      aria-valuemax={Math.round(scrollable)}
-      aria-valuenow={Math.round(scroller.current?.scrollLeft ?? 0)}
-    >
-      <div
-        ref={track}
-        className="mp-columns-track"
-        onPointerDown={(event) => {
-          event.currentTarget.setPointerCapture(event.pointerId);
-          scrollTo(event.clientX);
-        }}
-        onPointerMove={(event) => {
-          if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-            scrollTo(event.clientX);
-          }
-        }}
-      >
-        {columns.map((stack) => (
-          <span
-            key={stack.id}
-            className="mp-columns-mark"
-            data-mp-focused={stack.focused || undefined}
-            style={{
-              left: `${String(((stack.rect.x - layout.main.x) / total) * 100)}%`,
-              width: `${String((stack.rect.width / total) * 100)}%`,
-              top: `${String(((stack.rect.y - layout.main.y) / Math.max(1, layout.main.height)) * 100)}%`,
-              height: `${String((stack.rect.height / Math.max(1, layout.main.height)) * 100)}%`,
-            }}
-          />
-        ))}
-        <div ref={thumb} className="mp-columns-thumb" />
-      </div>
-    </div>
-  );
-}
-
 interface DragDeps {
   readonly store: WorkspaceStore;
   readonly root: { readonly current: HTMLDivElement | null };
-  readonly scroller: { readonly current: HTMLDivElement | null };
   readonly layoutRef: { readonly current: WorkspaceLayout | null };
   readonly setDrag: (drag: DragState | null) => void;
   readonly titleOf: (panel: PanelDescriptor) => string;
-  /** The canvas camera as drawn. */
-  readonly camera: { readonly current: Camera };
 }
 
 /** Dragging a tab: a short move starts it with a mouse, a long press with a finger. */
@@ -1524,7 +837,7 @@ function useTabDrag(deps: DragDeps): (event: ReactPointerEvent, panel: PanelDesc
   useEffect(() => () => stop.current?.(), []);
   return useCallback((event: ReactPointerEvent, panel: PanelDescriptor) => {
     const layout = latest.current.layoutRef.current;
-    if (!layout || layout.mode === "stack" || layout.mode === "overview") {
+    if (layout?.mode !== "tiling") {
       return;
     }
     stop.current?.();
@@ -1535,7 +848,6 @@ function useTabDrag(deps: DragDeps): (event: ReactPointerEvent, panel: PanelDesc
     let started = false;
     let armed = !touch;
     let target: DropTarget | null = null;
-    let frame = 0;
     const press = touch
       ? setTimeout(() => {
           armed = true;
@@ -1543,21 +855,18 @@ function useTabDrag(deps: DragDeps): (event: ReactPointerEvent, panel: PanelDesc
       : undefined;
 
     const update = (): void => {
-      const { root, scroller, store, layoutRef, setDrag, titleOf } = latest.current;
+      const { root, store, layoutRef, setDrag, titleOf } = latest.current;
       const bounds = root.current?.getBoundingClientRect();
       const current = layoutRef.current;
       if (!bounds || !current) {
         return;
       }
-      const scrollLeft = scroller.current?.scrollLeft ?? 0;
       target = dropTargetAt(
         store.state,
         current,
         panel.id,
         { x: last.x - bounds.left, y: last.y - bounds.top },
         {
-          scrollLeft,
-          camera: latest.current.camera.current,
           tabs: (stack) =>
             [
               ...(root.current?.querySelectorAll<HTMLElement>(
@@ -1572,27 +881,6 @@ function useTabDrag(deps: DragDeps): (event: ReactPointerEvent, panel: PanelDesc
         },
       );
       setDrag({ panel: panel.id, title: titleOf(panel), x: last.x, y: last.y, target });
-    };
-    // Near the sides of a scrolling main area, keep scrolling while the pointer rests there.
-    const autoScroll = (): void => {
-      const { root, scroller, layoutRef } = latest.current;
-      const bounds = root.current?.getBoundingClientRect();
-      const current = layoutRef.current;
-      const view = scroller.current;
-      if (started && bounds && current?.mode === "columns" && view) {
-        const x = last.x - bounds.left;
-        const left = current.main.x;
-        const right = current.main.x + current.main.width;
-        const speed = x < left + 48 && x >= left ? -14 : x > right - 48 && x <= right ? 14 : 0;
-        if (speed) {
-          const before = view.scrollLeft;
-          view.scrollLeft += speed;
-          if (view.scrollLeft !== before) {
-            update();
-          }
-        }
-      }
-      frame = requestAnimationFrame(autoScroll);
     };
     const move = (next: PointerEvent): void => {
       if (next.pointerId !== pointerId) {
@@ -1611,14 +899,12 @@ function useTabDrag(deps: DragDeps): (event: ReactPointerEvent, panel: PanelDesc
           return;
         }
         started = true;
-        frame = requestAnimationFrame(autoScroll);
       }
       next.preventDefault();
       update();
     };
     const finish = (commit: boolean): void => {
       clearTimeout(press);
-      cancelAnimationFrame(frame);
       document.removeEventListener("pointermove", move, true);
       document.removeEventListener("pointerup", up, true);
       document.removeEventListener("pointercancel", cancel, true);

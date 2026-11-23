@@ -4,7 +4,7 @@ import { dropTargetAt } from "./drop.js";
 import { computeLayout } from "./layout.js";
 import { apply } from "./operations.js";
 import { resizeSplitter } from "./resize.js";
-import { emptyWorkspace, mainStacks, stackOfPanel } from "./tree.js";
+import { emptyWorkspace, stackOfPanel } from "./tree.js";
 import { type Operation, type WorkspaceState } from "./types.js";
 
 const run = (operations: readonly Operation[]): WorkspaceState =>
@@ -55,37 +55,6 @@ describe("layout", () => {
     const layout = computeLayout(state, size);
     expect(layout.stacks).toHaveLength(1);
     expect(layout.stacks[0]?.rect).toEqual({ x: 0, y: 0, ...size });
-  });
-
-  it("lays columns out at their own widths and scrolls past the viewport", () => {
-    const start = run([
-      add("a"),
-      add("b", { at: "column", side: "right" }),
-      add("c", { at: "column", side: "right" }),
-      { type: "setView", view: "columns" },
-    ]);
-    const layout = computeLayout(start, size);
-    expect(layout.mode).toBe("columns");
-    const widths = layout.stacks.map(({ rect }) => rect.width);
-    expect(widths).toEqual([600, 600, 600]);
-    expect(layout.contentWidth).toBeGreaterThan(size.width);
-    expect(layout.stacks.every(({ pinned }) => !pinned)).toBe(true);
-    const first = mainStacks(start)[0];
-    const wider = apply(start, { type: "setColumnWidth", node: first?.id ?? "", fraction: 0.75 });
-    expect(computeLayout(wider, size).stacks[0]?.rect.width).toBe(900);
-  });
-
-  it("fits columns that add up to the main area without a stray pixel of scroll", () => {
-    const state = run([
-      add("a"),
-      add("b", { at: "column", side: "right" }),
-      { type: "setView", view: "columns" },
-    ]);
-    const layout = computeLayout(state, size);
-    expect(layout.contentWidth).toBe(size.width);
-    const [left, right] = layout.stacks;
-    expect((left?.rect.width ?? 0) + (right?.rect.width ?? 0) + 1).toBe(size.width);
-    expect((right?.rect.x ?? 0) + (right?.rect.width ?? 0)).toBe(size.width);
   });
 
   it("scales every panel into a card in the overview", () => {

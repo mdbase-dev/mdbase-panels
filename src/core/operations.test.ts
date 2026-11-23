@@ -1,7 +1,6 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
-import { arrangementOf, compose, parseArrangement, parseWindowState, windowOf } from "./arrangement.js";
 import { violations } from "./invariants.js";
 import { computeLayout } from "./layout.js";
 import { normalize } from "./normalize.js";
@@ -13,7 +12,6 @@ import {
   type Operation,
   type PanelDescriptor,
   type Target,
-  viewModes,
   type WorkspaceState,
 } from "./types.js";
 
@@ -29,25 +27,6 @@ const add = (id: string, target?: Target): Operation => ({
 });
 
 describe("operations", () => {
-  it("opens a new top-level column next to the column that holds the focused stack", () => {
-    const start = run([
-      add("a"),
-      add("b", { at: "beside", panel: "a", side: "right" }),
-      add("c", { at: "beside", panel: "a", side: "bottom" }),
-    ]);
-    // Focus is on "c", nested inside the first column.
-    const state = apply(start, add("d", { at: "column", side: "right" }));
-    expect(state.root?.type === "split" && state.root.children.map((child) => child.type)).toEqual([
-      "split",
-      "stack",
-      "stack",
-    ]);
-    expect(mainStacks(state).map(({ panels }) => panels)).toEqual([["a"], ["c"], ["d"], ["b"]]);
-    // Without a row at the root the new column goes beside the whole main area.
-    const lone = run([add("a"), add("b", { at: "column", side: "left" })]);
-    expect(mainStacks(lone).map(({ panels }) => panels)).toEqual([["b"], ["a"]]);
-  });
-
   it("opens the first panel as the root stack and focuses it", () => {
     const state = run([add("a")]);
     expect(state.root).toMatchObject({ type: "stack", panels: ["a"], active: "a" });
@@ -231,7 +210,6 @@ describe("operations", () => {
 });
 
 const ids = ["a", "b", "c", "d", "e", "f"] as const;
-const coordinate = fc.double({ min: -4000, max: 4000, noNaN: true });
 const side = fc.constantFrom("left", "right", "top", "bottom");
 const anyPanel = fc.constantFrom(...ids);
 const target = (stacks: fc.Arbitrary<string>): fc.Arbitrary<Target> =>
@@ -241,13 +219,7 @@ const target = (stacks: fc.Arbitrary<string>): fc.Arbitrary<Target> =>
     fc.record({ at: fc.constant("split" as const), stack: stacks, side }),
     fc.record({ at: fc.constant("beside" as const), panel: anyPanel, side }),
     fc.record({ at: fc.constant("root" as const), side }),
-    fc.record({ at: fc.constant("column" as const), side: fc.constantFrom("left" as const, "right" as const) }),
-    fc.record({ at: fc.constant("column" as const), stack: stacks, side: fc.constantFrom("left" as const, "right" as const) }),
     fc.record({ at: fc.constant("edge" as const), side: fc.constantFrom(...edgeSides), index: fc.nat(3) }),
-    fc.record(
-      { at: fc.constant("canvas" as const), x: coordinate, y: coordinate, width: coordinate, height: coordinate },
-      { requiredKeys: ["at", "x", "y"] },
-    ),
   );
 // Node ids are deterministic (`n1`, `n2`, …), so a small range reaches real stacks and misses.
 const stackId = fc.nat(14).map((value) => `n${String(value)}`);
@@ -276,22 +248,6 @@ const operation: fc.Arbitrary<Operation> = fc.oneof(
     side: fc.constantFrom(...edgeSides),
     options: fc.record({ visible: fc.boolean(), size: fc.double({ min: -50, max: 900, noNaN: true }) }, { requiredKeys: [] }),
   }),
-  fc.record({ type: fc.constant("setView" as const), view: fc.constantFrom(...viewModes) }),
-  fc.record({
-    type: fc.constant("setView" as const),
-    view: fc.constant("canvas" as const),
-    frames: fc.dictionary(stackId, fc.record({ x: coordinate, y: coordinate, width: coordinate, height: coordinate })),
-  }),
-  fc.record({
-    type: fc.constant("setFrame" as const),
-    stack: stackId,
-    frame: fc.record({ x: coordinate, y: coordinate, width: coordinate, height: coordinate }, { requiredKeys: [] }),
-  }),
-  fc.record({
-    type: fc.constant("setCamera" as const),
-    camera: fc.record({ x: coordinate, y: coordinate, zoom: fc.double({ min: -1, max: 5, noNaN: true }) }, { requiredKeys: [] }),
-  }),
-  fc.record({ type: fc.constant("setColumnWidth" as const), node: stackId, fraction: fc.double({ min: -1, max: 3, noNaN: true }) }),
   fc.record({ type: fc.constant("flatten" as const) }),
 );
 
@@ -315,40 +271,6 @@ describe("any sequence of operations", () => {
         const state = run(operations);
         expect(normalize(state)).toBe(state);
         expect(fromSnapshot(JSON.parse(JSON.stringify(toSnapshot(state))))).toEqual(state);
-      }),
-      { numRuns: 300 },
-    );
-  });
-
-  it("is the same state again after being split into arrangement and window state", () => {
-    const json = (value: unknown): unknown => JSON.parse(JSON.stringify(value));
-    fc.assert(
-      fc.property(fc.array(operation, { maxLength: 30 }), (operations) => {
-        const state = run(operations);
-        const again = compose(
-          parseArrangement(json(arrangementOf(state))),
-          parseWindowState(json(windowOf(state))),
-        );
-        expect(violations(again)).toEqual([]);
-        // Layers are kept as an order, so only the order of the frames has to survive.
-        const order = (from: WorkspaceState): string[] =>
-          Object.entries(from.canvas.frames)
-            .sort(([, a], [, b]) => a.z - b.z)
-            .map(([id]) => id);
-        const flat = (from: WorkspaceState): WorkspaceState => ({
-          ...from,
-          canvas: {
-            ...from.canvas,
-            frames: Object.fromEntries(
-              Object.entries(from.canvas.frames).map(([id, frame]) => [id, { ...frame, z: 0 }]),
-            ),
-          },
-        });
-        expect(flat(again)).toEqual(flat(state));
-        const tied = new Set(Object.values(state.canvas.frames).map(({ z }) => z)).size !== order(state).length;
-        if (!tied) {
-          expect(order(again)).toEqual(order(state));
-        }
       }),
       { numRuns: 300 },
     );
@@ -379,12 +301,8 @@ describe("any sequence of operations", () => {
             for (const stack of layout.stacks) {
               expect(stack.rect.width).toBeGreaterThanOrEqual(0);
               expect(stack.rect.height).toBeGreaterThanOrEqual(0);
-              if (layout.mode === "canvas" && !stack.pinned) {
-                // A pane on the canvas is in plane pixels and may be anywhere.
-                continue;
-              }
               expect(stack.rect.x).toBeGreaterThanOrEqual(0);
-              expect(stack.rect.x + stack.rect.width).toBeLessThanOrEqual(layout.contentWidth + 0.5);
+              expect(stack.rect.x + stack.rect.width).toBeLessThanOrEqual(width + 0.5);
               expect(stack.rect.y + stack.rect.height).toBeLessThanOrEqual(height + 0.5);
             }
             if (layout.mode === "overview") {

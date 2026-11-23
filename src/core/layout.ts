@@ -1,6 +1,5 @@
 import { findStack, mainStacks } from "./tree.js";
 import {
-  type Camera,
   type EdgeSide,
   type LayoutNode,
   type NodeId,
@@ -11,7 +10,8 @@ import {
   type WorkspaceState,
 } from "./types.js";
 
-export type LayoutMode = "tiling" | "columns" | "canvas" | "stack" | "overview";
+/** `stack` shows one panel at a time (a narrow screen); `overview` shows every panel, scaled down. */
+export type LayoutMode = "tiling" | "stack" | "overview";
 
 export interface LayoutOptions {
   /** Below this workspace width one panel is shown at a time. 0 disables it. */
@@ -27,9 +27,6 @@ export interface LayoutOptions {
   /** The main area never gets narrower than this; edge regions give way instead. */
   readonly minMainWidth?: number;
   readonly minMainHeight?: number;
-  /** Default width of a column in the `columns` view, as a fraction of the main area. */
-  readonly columnFraction?: number;
-  readonly minColumnWidth?: number;
   /** Show every panel at once, scaled down. */
   readonly overview?: boolean;
   /** Space around and between overview cards, and the height of each card's label. */
@@ -56,8 +53,6 @@ const defaults = {
   minStackHeight: 120,
   minMainWidth: 240,
   minMainHeight: 160,
-  columnFraction: 0.5,
-  minColumnWidth: 320,
   overview: false,
   overviewGap: 24,
   overviewLabelHeight: 28,
@@ -72,15 +67,7 @@ export interface StackLayout {
   readonly rect: Rect;
   readonly header: Rect;
   readonly body: Rect;
-  /**
-   * Pinned things are placed in the viewport and stay put. Everything else moves with the main
-   * area: it scrolls sideways in the `columns` view, and in the `canvas` view its box is in
-   * plane pixels, to be drawn through `WorkspaceLayout.camera`.
-   */
-  readonly pinned: boolean;
   readonly focused: boolean;
-  /** Drawing order on the canvas, from 1 at the back. 0 everywhere else. */
-  readonly layer: number;
 }
 
 export interface PanelLayout {
@@ -91,8 +78,6 @@ export interface PanelLayout {
   readonly visible: boolean;
   /** 1 except in the overview. */
   readonly scale: number;
-  readonly pinned: boolean;
-  readonly layer: number;
 }
 
 export type SplitterLayout = {
@@ -100,7 +85,6 @@ export type SplitterLayout = {
   readonly rect: Rect;
   /** `row` moves left and right; `column` moves up and down. */
   readonly direction: "row" | "column";
-  readonly pinned: boolean;
 } & (
   | {
       readonly kind: "split";
@@ -117,14 +101,6 @@ export type SplitterLayout = {
       readonly min: number;
       readonly max: number;
     }
-  | {
-      readonly kind: "column";
-      readonly node: NodeId;
-      readonly width: number;
-      readonly min: number;
-      /** The main area's width: a column's stored width is a fraction of it. */
-      readonly basis: number;
-    }
 );
 
 export interface OverviewCard {
@@ -138,16 +114,12 @@ export interface WorkspaceLayout {
   readonly size: Size;
   /** The main area as it sits in the viewport, between the edge regions. */
   readonly main: Rect;
-  /** Full scrollable width. Wider than `size.width` only in the `columns` view. */
-  readonly contentWidth: number;
   readonly stacks: readonly StackLayout[];
   readonly panels: readonly PanelLayout[];
   readonly splitters: readonly SplitterLayout[];
   readonly cards: readonly OverviewCard[];
   /** Edge regions that gave way because the workspace is too small. */
   readonly yielded: readonly EdgeSide[];
-  /** In the `canvas` mode, the camera that unpinned boxes are drawn through. Null otherwise. */
-  readonly camera: Camera | null;
 }
 
 interface Context {
@@ -169,9 +141,7 @@ export function computeLayout(
   const viewport: Rect = { x: 0, y: 0, width: Math.max(0, size.width), height: Math.max(0, size.height) };
   const compact = options.compactBelow > 0 && viewport.width < options.compactBelow;
 
-  let mode: LayoutMode = compact ? "stack" : state.view;
   let main = viewport;
-  let contentWidth = viewport.width;
   let yielded: EdgeSide[] = [];
 
   if (compact) {
@@ -179,21 +149,14 @@ export function computeLayout(
   } else if (state.maximized !== null && findStack(state, state.maximized)) {
     const stack = findStack(state, state.maximized);
     if (stack) {
-      placeStack(context, stack, viewport, null, false);
+      placeStack(context, stack, viewport, null);
     }
-    mode = "tiling";
   } else {
     const edges = layoutEdges(context, viewport);
     main = edges.main;
     yielded = edges.yielded;
     if (state.root) {
-      if (state.view === "columns") {
-        contentWidth = layoutColumns(context, state.root, main, viewport);
-      } else if (state.view === "canvas") {
-        layoutCanvas(context);
-      } else {
-        layoutNode(context, state.root, main);
-      }
+      layoutNode(context, state.root, main);
     }
   }
   hideUnplaced(context, viewport);
@@ -202,16 +165,14 @@ export function computeLayout(
     return overview(context, viewport, main, yielded);
   }
   return {
-    mode,
+    mode: compact ? "stack" : "tiling",
     size: { width: viewport.width, height: viewport.height },
     main,
-    contentWidth,
     stacks: context.stacks,
     panels: context.panels,
     splitters: context.splitters,
     cards: [],
     yielded,
-    camera: mode === "canvas" ? state.canvas.camera : null,
   };
 }
 
@@ -224,9 +185,7 @@ function placeStack(
   stack: StackNode,
   rect: Rect,
   edge: EdgeSide | null,
-  pinned: boolean,
   headerHeight = context.options.headerHeight,
-  layer = 0,
 ): void {
   const head = Math.min(headerHeight, rect.height);
   const header: Rect = { x: rect.x, y: rect.y, width: rect.width, height: head };
@@ -237,9 +196,7 @@ function placeStack(
     rect,
     header,
     body,
-    pinned,
     focused: context.state.focus === stack.id,
-    layer,
   });
   for (const id of stack.panels) {
     context.panels.push({
@@ -248,34 +205,7 @@ function placeStack(
       rect: body,
       visible: stack.active === id,
       scale: 1,
-      pinned,
-      layer,
     });
-  }
-}
-
-/**
- * Every main-area stack where its frame says, in plane pixels. Stacks keep their tree order
- * (so a view never has to reorder anything to raise a pane); `layer` says what is in front.
- */
-function layoutCanvas(context: Context): void {
-  const { state } = context;
-  const stacks = mainStacks(state);
-  const back = stacks
-    .flatMap(({ id }) => (state.canvas.frames[id] ? [id] : []))
-    .sort((a, b) => (state.canvas.frames[a]?.z ?? 0) - (state.canvas.frames[b]?.z ?? 0));
-  for (const stack of stacks) {
-    const frame = state.canvas.frames[stack.id];
-    if (!frame) {
-      continue;
-    }
-    const rect: Rect = {
-      x: Math.round(frame.x),
-      y: Math.round(frame.y),
-      width: Math.round(frame.width),
-      height: Math.round(frame.height),
-    };
-    placeStack(context, stack, rect, null, false, context.options.headerHeight, back.indexOf(stack.id) + 1);
   }
 }
 
@@ -287,7 +217,7 @@ function layoutCompact(context: Context, viewport: Rect): void {
     mainStacks(state)[0] ??
     Object.values(state.edges).find((edge) => edge.stack.panels.length)?.stack;
   if (stack) {
-    placeStack(context, stack, viewport, null, true, context.options.compactHeaderHeight);
+    placeStack(context, stack, viewport, null, context.options.compactHeaderHeight);
   }
 }
 
@@ -304,8 +234,6 @@ function hideUnplaced(context: Context, viewport: Rect): void {
           rect,
           visible: false,
           scale: 1,
-          pinned: true,
-          layer: 0,
         });
       }
     }
@@ -395,7 +323,7 @@ function layoutEdges(context: Context, viewport: Rect): { main: Rect; yielded: E
     if (!edge || !sizes[side]) {
       continue;
     }
-    placeStack(context, edge.stack, regions[side], side, true);
+    placeStack(context, edge.stack, regions[side], side);
     const horizontal = side === "left" || side === "right";
     const min = edge.min ?? (horizontal ? options.minStackWidth : options.minStackHeight);
     const room = horizontal
@@ -407,7 +335,6 @@ function layoutEdges(context: Context, viewport: Rect): { main: Rect; yielded: E
       side,
       rect: bars[side],
       direction: horizontal ? "row" : "column",
-      pinned: true,
       size: sizes[side],
       min,
       max: Math.max(min, Math.min(edge.max ?? Number.POSITIVE_INFINITY, room)),
@@ -475,7 +402,7 @@ export function distribute(
 
 function layoutNode(context: Context, node: LayoutNode, rect: Rect): void {
   if (node.type === "stack") {
-    placeStack(context, node, rect, null, false);
+    placeStack(context, node, rect, null);
     return;
   }
   const { gutter } = context.options;
@@ -502,7 +429,6 @@ function layoutNode(context: Context, node: LayoutNode, rect: Rect): void {
           ? { x: offset, y: rect.y, width: gutter, height: rect.height }
           : { x: rect.x, y: offset, width: rect.width, height: gutter },
         direction: node.direction,
-        pinned: false,
         sizes,
         minimums,
       });
@@ -519,59 +445,6 @@ function roundTo(sizes: readonly number[], total: number): number[] {
     rounded[index] = (rounded[index] ?? 0) + 1;
   }
   return rounded;
-}
-
-/** The top-level children of the root row, or the root itself. */
-export function columnNodes(root: LayoutNode): readonly LayoutNode[] {
-  return root.type === "split" && root.direction === "row" ? root.children : [root];
-}
-
-/** A strip of columns that can be wider than the workspace. Returns the full content width. */
-function layoutColumns(context: Context, root: LayoutNode, main: Rect, viewport: Rect): number {
-  const { options, state } = context;
-  const nodes = columnNodes(root);
-  const gutter = options.gutter;
-  const least = Math.min(options.minColumnWidth, main.width);
-  let widths = nodes.map((node) =>
-    Math.max(
-      Math.min(minimum(context, node, "width"), main.width),
-      least,
-      Math.min(1, state.columns[node.id] ?? options.columnFraction) * main.width,
-    ),
-  );
-  const gutters = gutter * (nodes.length - 1);
-  const sum = widths.reduce((total, value) => total + value, 0);
-  if (sum <= main.width + 0.5) {
-    // Columns that fit share the main area exactly: they grow to fill a gap, and give up the
-    // few pixels their dividers need (two half-width columns must not scroll by a pixel).
-    const scale = (main.width - gutters) / sum;
-    widths = widths.map((value) => value * scale);
-  }
-  widths = roundTo(
-    widths,
-    Math.round(widths.reduce((total, value) => total + value, 0)),
-  );
-  let x = main.x;
-  nodes.forEach((node, index) => {
-    const width = widths[index] ?? 0;
-    layoutNode(context, node, { x, y: main.y, width, height: main.height });
-    x += width;
-    context.splitters.push({
-      id: `column:${node.id}`,
-      kind: "column",
-      node: node.id,
-      rect: { x: index === nodes.length - 1 ? x - gutter : x, y: main.y, width: gutter, height: main.height },
-      direction: "row",
-      pinned: false,
-      width,
-      min: least,
-      basis: main.width,
-    });
-    if (index < nodes.length - 1) {
-      x += gutter;
-    }
-  });
-  return x + (viewport.width - main.x - main.width);
 }
 
 /** Every panel at once, each scaled to fit a card in a grid. */
@@ -636,8 +509,6 @@ function overview(
         rect: { x, y, width: own.width, height: own.height },
         visible: true,
         scale,
-        pinned: true,
-        layer: 0,
       },
     ];
   });
@@ -645,12 +516,10 @@ function overview(
     mode: "overview",
     size: { width: viewport.width, height: viewport.height },
     main,
-    contentWidth: viewport.width,
     stacks: [],
     panels,
     splitters: [],
     cards,
     yielded,
-    camera: null,
   };
 }

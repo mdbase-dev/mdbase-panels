@@ -18,9 +18,6 @@ export function emptyWorkspace(): WorkspaceState {
     edges: {},
     focus: null,
     maximized: null,
-    view: "tiling",
-    columns: {},
-    canvas: { frames: {}, camera: { x: 0, y: 0, zoom: 1 } },
     leader: null,
     seq: 1,
   };

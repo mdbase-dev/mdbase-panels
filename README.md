@@ -1,8 +1,7 @@
 # @mdbase-dev/panels
 
-A workspace of panels for web apps: tabs, splits, side regions, an unbounded canvas, and several
-ways of looking at the same arrangement. The core is plain TypeScript with no dependencies; a React binding draws
-it.
+A workspace of panels for web apps: tabs, splits and side regions. The core is plain TypeScript
+with no dependencies; a React binding draws it.
 
 It was written for the mdbase apps (reader, editor, writer) but knows nothing about them.
 
@@ -16,10 +15,9 @@ It was written for the mdbase apps (reader, editor, writer) but knows nothing ab
 - **The layout is a document.** The whole workspace is one immutable JSON value. Every change is
   an operation, which is also plain data. That gives undo and redo, and a snapshot format that
   can be stored anywhere.
-- **One model, several views.** The same arrangement can be shown as tiles that fill the
-  window (`tiling`), as columns that keep their width and scroll sideways (`columns`), as panes
-  placed freely on a plane that pans and zooms (`canvas`), as a single panel on a narrow screen
-  (`stack`), or all at once, scaled down (`overview`).
+- **One model, three ways to show it.** The same arrangement is drawn as tiles that fill the
+  window (`tiling`), as a single panel on a narrow screen (`stack`), or all at once, scaled down
+  (`overview`).
 - **Side regions are ordinary stacks.** A region docked to a side has a size, limits and a
   priority, and nothing else is special about it: any panel can be moved in or out, and a region
   with no panels takes no room. What is saved is only whether the user wants it shown. Whether
@@ -41,12 +39,6 @@ interface WorkspaceState {
   edges: Partial<Record<"left" | "right" | "top" | "bottom", EdgeRegion>>;
   focus: NodeId | null;                     // the stack that has focus
   maximized: NodeId | null;                 // a stack filling the workspace, edges hidden
-  view: "tiling" | "columns" | "canvas";
-  columns: Record<NodeId, number>;          // column widths, as fractions of the main width
-  canvas: {
-    frames: Record<NodeId, Rect & { z: number }>; // where each stack is on the plane
-    camera: { x: number; y: number; zoom: number };
-  };
   leader: PanelId | null;                   // whom follower panels are about
   seq: number;                              // source of node ids
 }
@@ -59,7 +51,8 @@ interface PanelDescriptor {
   data?: PanelData;  // JSON, opaque to the library; the app's own state for this panel
   minWidth?: number;
   minHeight?: number;
-  leads?: boolean;   // false for a panel that shows something about another panel
+  leads?: boolean;   // false for a panel that is about others without following one
+  follows?: "leader" | { pane: NodeId }; // a follower: see "The leader and followers"
 }
 ```
 
@@ -108,32 +101,12 @@ leader. A panel that is about others without following any one of them (a list o
 say) takes `leads: false` instead. When the focused panel does not lead, `{ type: "lead",
 panel }` names the leader.
 
-### The canvas
-
-In the `canvas` view every main-area stack has a frame on an unbounded plane, and a camera says
-which part of the plane is on screen. The stacks are still in the tree, so the other views keep
-working, and frames are kept when the view changes.
-
-```ts
-store.dispatch({ type: "setView", view: "canvas", frames: seedFrames(layout.stacks, layout.main) });
-store.dispatch({ type: "setFrame", stack, frame: { x: 400, y: 80 } });
-store.dispatch({ type: "setCamera", camera: { zoom: 0.5 } });
-store.dispatch({ type: "move", panel, target: { at: "canvas", x: 1200, y: 0 } });
-```
-
-`frames` on `setView` is used the first time only, so that going to the canvas does not move
-anything. A stack made by splitting goes beside the stack it was split from, further out if
-something is in the way; the focused stack is in front. Moving the camera is not an undo step,
-and undo leaves the camera where it is. `cameraToFit`, `cameraToReveal` and `zoomCameraAt` work
-out cameras, and `dragFrame` turns a drag on a frame's side or corner into a new frame.
-
 ## Operations
 
 ```ts
 store.dispatch({ type: "add", panel: { id: "p1", kind: "doc", title: "Notes" } });
 store.dispatch({ type: "add", panel, target: { at: "beside", panel: "p1", side: "right" } });
 store.dispatch({ type: "move", panel: "p1", target: { at: "edge", side: "left" } });
-store.dispatch({ type: "setView", view: "columns" });
 ```
 
 | Operation | Effect |
@@ -143,17 +116,14 @@ store.dispatch({ type: "setView", view: "columns" });
 | `activate`, `focus` | Show a panel; give a stack focus |
 | `lead` | Name the leader while the focused panel does not lead |
 | `follow` | Make a panel a follower, change whom it follows, or stop it following |
-| `resize`, `setColumnWidth`, `configureEdge` | Sizes of splits, columns and side regions |
+| `resize`, `configureEdge` | Sizes of splits and side regions |
 | `maximize` | One stack fills the workspace (pass `null` to restore) |
-| `setView` | `tiling`, `columns` or `canvas` |
-| `setFrame`, `setCamera` | Move or resize a pane on the canvas; pan or zoom it |
 | `flatten` | Gather every main-area panel into one stack |
 | `batch`, `load` | Several operations as one step; replace the whole state |
 
 Targets say where a panel goes: `focus` (a tab in the focused stack), `stack`, `split` (a new
 stack on one side of an existing one), `beside` (next to the stack that holds another panel),
-`column` (a new top-level column), `root` (along one side of the whole main area), `edge`, and
-`canvas` (a new pane at a point on the plane).
+`root` (along one side of the whole main area) and `edge`.
 
 `apply(state, operation)` is pure, so operations can be logged, replayed or sent elsewhere.
 
@@ -180,37 +150,10 @@ Only the first two exist today. The snapshot is `{ format: "mdbase-panels", vers
 workspace }`. `fromSnapshot` validates and repairs what it reads and throws on anything it does
 not recognise, so a saved layout can never stop an app from starting.
 
-### Arrangement and window state
-
-A workspace is two things, and they are worth keeping apart.
-
-- The **arrangement** is what is open and where it sits: the panels, the tree of stacks, the
-  side regions and their sizes, the view, column widths and canvas frames. It is the part worth
-  keeping, and every window that shows the workspace shares it.
-- The **window state** is how one window is looking at it: which stack has focus, which tab is
-  in front in each stack, which side regions are open, what is maximized, where the canvas is
-  panned and zoomed to, which pane is in front. It changes with nearly every click.
-
-```ts
-import { WorkspaceStore, webSharedStorage } from "@mdbase-dev/panels";
-
-const store = new WorkspaceStore({ shared: webSharedStorage("my-app:workspace") });
-```
-
-With `shared` instead of `storage`, the store saves each half only when it changes.
-`webSharedStorage` keeps the arrangement in local storage, where every window on the origin
-reads it and is told when another window saves it, and the window state in session storage,
-which each window has to itself (a copy in local storage starts a new window off like the one
-used last). Two windows then show the same tabs in the same places, each with its own focus,
-front tabs, open sides and canvas position.
-
-`arrangementOf(state)` and `windowOf(state)` take a state apart, `compose(arrangement, window)`
-puts one back together (the window state may be stale or missing), and `parseArrangement` and
-`parseWindowState` read them from untrusted JSON. `store.adopt(arrangement)` takes an
-arrangement made elsewhere while keeping this window's view of it; it drops the undo history,
-whose steps would otherwise undo the other window's work. Anything else that should hold a
-workspace (an mdbase record, a file) is a `SharedStorage`: two `{ load(), save() }` pairs and
-an optional `watch`. Only the arrangement belongs in something that is synced.
+A window that should keep its own layout across a reload, while a new window starts from the
+one used last, saves to session storage and to local storage and reads session storage first.
+That is a `{ load(), save() }` pair of a few lines; the library does not keep two windows in
+step with each other.
 
 ## React
 
@@ -236,32 +179,6 @@ long-press touch), splitters, keyboard use (arrow keys between tabs, Delete to c
 Ctrl/Cmd+Shift+arrows to reorder, arrow keys on a focused splitter), context menus, announcements
 for screen readers, and animation between layouts (off when the system asks for reduced motion).
 
-On the canvas, the wheel pans and Ctrl or Cmd with the wheel (a trackpad pinch) zooms about the
-pointer; dragging open ground pans. The focused pane works as usual while the canvas is at actual
-size (100%). Every other pane is covered: a click picks a pane, a double click brings it to
-actual size (as does a double click on the bare part of its tab strip), and a wheel or drag over
-it moves the canvas instead of being swallowed by a frame inside it. A zoom that reaches 100%
-settles there.
-
-What the focused pane does at any other zoom is up to its panel, through the `zoom` prop:
-
-```tsx
-<Workspace zoom={(panel) => (panel.kind === "doc" ? "native" : "scaled")} … />
-```
-
-| `zoom` | On a zoomed canvas |
-| --- | --- |
-| `picture` (default) | Drawn through the canvas's scale and covered: it can be arranged, not used. |
-| `scaled` | Drawn through the scale and live. For content that never compares its own layout with positions on screen. |
-| `native` | Laid out at the size it has on screen, and given the zoom as `info.zoom` so that it draws itself at it (bigger text, a page fitted to the width). Nothing scales its content, so whatever measures itself (a selection toolbar, an annotation) behaves as it does anywhere else. |
-
-A `native` panel is laid out again when a zoom gesture settles, not on every step of it; in
-between it is a picture. A pane is moved by the grip at the start of its
-tab strip (or any bare part of the strip; arrow keys on the grip move it, with Shift they resize
-it) and resized from its sides and corners. Dragging a tab onto open ground gives it a pane of
-its own. Panning and zooming change one transform per pane and lay nothing out again; the camera
-is written to the state when the gesture settles.
-
 Colours and sizes come from custom properties (`--mp-bg`, `--mp-surface`, `--mp-header-bg`,
 `--mp-border`, `--mp-text`, `--mp-muted`, `--mp-accent`, `--mp-drop`, and so on) set on
 `.mp-workspace` or any ancestor.
@@ -272,16 +189,15 @@ every stack, panel and splitter, `dropTargetAt` says where a dragged panel would
 
 ## Not built
 
-- On the canvas: pinch-zoom with two fingers on a touch screen (a trackpad pinch works), a
-  minimap, lines or groups between panes, and export to a canvas file format.
 - Dropping a tab on a side region that is empty or hidden. Use a `move` operation (a menu item).
 - A general constraint solver. Sizes use minimums, maximums and priorities.
-- Storage in mdbase records, and sync between devices or people. The arrangement is the half
-  to put there; see "Arrangement and window state".
+- Storage in mdbase records, and sync between devices, windows or people.
 - Workspaces shared between apps. `PanelDescriptor.app` and the opaque `data` are there so a
   workspace can hold panels of several apps; nothing reads them yet.
-- Pop-out windows. Two ordinary windows already share an arrangement; a window that shows only
-  part of one does not exist.
+- Pop-out windows.
+- Other ways to arrange the main area. A view of columns that scroll sideways and a free canvas
+  that pans and zooms were built and taken out again in 0.3.0, to keep the library to what its
+  apps use. They are in the history at the `with-canvas` tag.
 
 ## Development
 

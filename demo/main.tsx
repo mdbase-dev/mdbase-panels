@@ -1,15 +1,7 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 
-import {
-  mainStacks,
-  seedFrames,
-  webSharedStorage,
-  WorkspaceStore,
-  type Operation,
-  type ViewMode,
-  type WorkspaceLayout,
-} from "../src/core/index.js";
+import { mainStacks, webStorage, WorkspaceStore, type Operation } from "../src/core/index.js";
 import { useSubject, useWorkspaceState, Workspace } from "../src/react/index.js";
 import "../src/styles.css";
 
@@ -24,10 +16,7 @@ const seed: Operation[] = [
   { type: "configureEdge", side: "right", options: { size: 280, priority: 1 } },
   { type: "activate", panel: "paper" },
 ];
-const store = new WorkspaceStore({
-  // What is open is shared by every window on this page's origin; each keeps its own focus.
-  ...(fresh ? {} : { shared: webSharedStorage("mdbase-panels-demo:2") }),
-});
+const store = new WorkspaceStore(fresh ? {} : { storage: webStorage("mdbase-panels-demo:3") });
 if (!Object.keys(store.state.panels).length) {
   for (const operation of seed) {
     store.dispatch(operation, { history: "skip" });
@@ -36,11 +25,10 @@ if (!Object.keys(store.state.panels).length) {
 Object.assign(globalThis, { store });
 
 let count = 0;
-function Doc({ id, title, zoom }: { id: string; title: string; zoom: number }) {
+function Doc({ id, title }: { id: string; title: string }) {
   const [clicks, setClicks] = useState(0);
   return (
-    // A native panel draws itself at the canvas's zoom: here, by scaling its text.
-    <div className="doc" data-doc={id} data-zoom={zoom} style={{ fontSize: `${String(zoom * 100)}%` }}>
+    <div className="doc" data-doc={id}>
       <h2>{title}</h2>
       <p>
         <button onClick={() => setClicks(clicks + 1)}>Clicked {clicks} times</button> State and the
@@ -71,9 +59,6 @@ function Follower({ id, title }: { id: string; title: string }) {
   );
 }
 
-const views: readonly ViewMode[] = ["tiling", "columns", "canvas"];
-let lastLayout: WorkspaceLayout | null = null;
-
 function App() {
   const state = useWorkspaceState(store);
   const [overview, setOverview] = useState(false);
@@ -93,28 +78,13 @@ function App() {
             store.dispatch({
               type: "add",
               panel: { id: `doc-${Date.now().toString(36)}-${String(count)}`, kind: "doc", title: `Document ${String(count)}` },
-              target:
-                state.view === "columns"
-                  ? { at: "column", side: "right" }
-                  : focused?.active
-                    ? { at: "beside", panel: focused.active, side: "right" }
-                    : { at: "root", side: "right" },
+              target: focused?.active
+                ? { at: "beside", panel: focused.active, side: "right" }
+                : { at: "root", side: "right" },
             });
           }}
         >
           Open beside
-        </button>
-        <button
-          onClick={() => {
-            const view = views[(views.indexOf(state.view) + 1) % views.length] ?? "tiling";
-            store.dispatch({
-              type: "setView",
-              view,
-              ...(view === "canvas" && lastLayout ? { frames: seedFrames(lastLayout.stacks, lastLayout.main) } : {}),
-            });
-          }}
-        >
-          View: {state.view}
         </button>
         <button onClick={() => setOverview(!overview)}>Overview</button>
         <button onClick={() => store.dispatch({ type: "configureEdge", side: "left", options: { visible: !state.edges.left?.visible } })}>Left</button>
@@ -129,15 +99,11 @@ function App() {
         layout={{ compactBelow: 681, compactHeaderHeight: 36 }}
         overview={overview}
         onOverviewChange={setOverview}
-        onLayout={(layout) => {
-          lastLayout = layout;
-        }}
-        zoom={(panel) => (panel.kind === "doc" ? "native" : "scaled")}
-        renderPanel={(panel, info) =>
+        renderPanel={(panel) =>
           panel.kind === "side" ? (
             <Follower id={panel.id} title={panel.title ?? panel.id} />
           ) : (
-            <Doc id={panel.id} title={panel.title ?? panel.id} zoom={info.zoom} />
+            <Doc id={panel.id} title={panel.title ?? panel.id} />
           )
         }
         renderEmpty={() => <p>Nothing open. Use Open.</p>}

@@ -14,37 +14,10 @@ export {
   stackOfPanel,
   subjectOf,
 } from "./tree.js";
-export {
-  arrangementOf,
-  compose,
-  parseArrangement,
-  parseWindowState,
-  sameArrangement,
-  windowOf,
-  type Arrangement,
-  type WindowState,
-} from "./arrangement.js";
-export { normalize, columnFractionRange } from "./normalize.js";
-export {
-  boundsOf,
-  cameraToFit,
-  cameraToReveal,
-  canvasDefaults,
-  canvasFrames,
-  clampCamera,
-  clampZoom,
-  dragFrame,
-  frameBeside,
-  sameCamera,
-  seedFrames,
-  towardsActualSize,
-  zoomCameraAt,
-  type FrameHandle,
-} from "./canvas.js";
+export { normalize } from "./normalize.js";
 export { violations } from "./invariants.js";
 export { apply, defaultEdgeSize, keepPanels } from "./operations.js";
 export {
-  columnNodes,
   computeLayout,
   distribute,
   type LayoutMode,
@@ -59,12 +32,10 @@ export { dropTargetAt, type DropOptions, type DropTarget } from "./drop.js";
 export { fromSnapshot, toSnapshot, type WorkspaceSnapshot } from "./serialize.js";
 export {
   memoryStorage,
-  webSharedStorage,
   webStorage,
   WorkspaceStore,
   type DispatchOptions,
   type Rebase,
-  type SharedStorage,
   type StoreOptions,
   type WorkspaceChange,
   type WorkspaceStorage,

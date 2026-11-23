@@ -1,7 +1,6 @@
 export {
   Workspace,
   type PanelInfo,
-  type PanelZoom,
   type StackInfo,
   type TabInfo,
   type WorkspaceLabels,

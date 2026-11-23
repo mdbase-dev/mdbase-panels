@@ -1,7 +1,7 @@
 {
   "name": "@mdbase-dev/panels",
-  "version": "0.2.0",
-  "description": "A workspace engine for the web: panels with stable identity, a layout document, and several views of one model.",
+  "version": "0.3.0",
+  "description": "A workspace of panels for the web: tabs, splits and side regions over a layout document, with panels that keep their identity.",
   "license": "MIT",
   "type": "module",
   "sideEffects": [
