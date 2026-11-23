@@ -1,5 +1,5 @@
 import { canvasDefaults, clampCamera, frameBeside } from "./canvas.js";
-import { allStacks, findStack, mainStacks, normalizeSizes } from "./tree.js";
+import { allStacks, canLead, findStack, mainStacks, normalizeSizes } from "./tree.js";
 import {
   edgeSides,
   type CanvasFrame,
@@ -23,6 +23,8 @@ export const columnFractionRange = { min: 0.15, max: 1 } as const;
  * - split sizes are positive and sum to 1;
  * - `active`, `focus` and `maximized` refer to things that exist;
  * - `leader` is a panel that can lead, and is the focused panel whenever that one can lead;
+ * - every stack's `lead` is a panel in it that can lead: the active one whenever that one can;
+ * - a panel follows the leader or a pane that exists;
  * - canvas frames belong to main-area stacks, and in the `canvas` view every main-area stack
  *   has one, with the focused stack in front.
  * Normalizing a canonical state returns the same object.
@@ -40,9 +42,18 @@ export function normalize(state: WorkspaceState): WorkspaceState {
     });
     const active =
       stack.active !== null && panels.includes(stack.active) ? stack.active : (panels[0] ?? null);
-    return panels.length === stack.panels.length && active === stack.active
-      ? stack
-      : { ...stack, panels, active };
+    const leading = (id: PanelId | null | undefined): id is PanelId =>
+      typeof id === "string" && panels.includes(id) && canLead(state.panels[id]);
+    const lead = leading(active)
+      ? active
+      : leading(stack.lead)
+        ? stack.lead
+        : panels.find((id) => leading(id));
+    if (panels.length === stack.panels.length && active === stack.active && lead === stack.lead) {
+      return stack;
+    }
+    const { lead: _was, ...rest } = stack;
+    return { ...rest, panels, active, ...(lead === undefined ? {} : { lead }) };
   };
   const cleanNode = (node: LayoutNode): LayoutNode | null => {
     if (seenNodes.has(node.id)) {
@@ -80,11 +91,12 @@ export function normalize(state: WorkspaceState): WorkspaceState {
       return children[0] ?? null;
     }
     const normalized = normalizeSizes(sizes, children.length);
-    const same =
+    // Sizes that are already right are kept as they are: scaling them again would drift.
+    const sized =
       children.length === node.children.length &&
-      children.every((child, index) => child === node.children[index]) &&
       normalized.every((value, index) => Math.abs(value - (node.sizes[index] ?? -1)) < 1e-12);
-    return same ? node : { ...node, children, sizes: normalized };
+    const same = sized && children.every((child, index) => child === node.children[index]);
+    return same ? node : { ...node, children, sizes: sized ? node.sizes : normalized };
   };
 
   const root = state.root ? cleanNode(state.root) : null;
@@ -113,9 +125,10 @@ export function normalize(state: WorkspaceState): WorkspaceState {
     panels = kept;
   }
 
+  const everything = allStacks({ ...state, root, edges });
+  panels = cleanFollows(panels, new Set(everything.map(({ id }) => id)));
   const draft: WorkspaceState = { ...state, root, edges, panels };
   const main = mainStacks(draft);
-  const everything = allStacks(draft);
   const focusValid = everything.some(({ id, panels: held }) => id === state.focus && held.length);
   const focus = focusValid
     ? state.focus
@@ -188,8 +201,23 @@ function nodeIds(node: LayoutNode): string[] {
   return node.type === "stack" ? [node.id] : [node.id, ...node.children.flatMap(nodeIds)];
 }
 
+/** A follower of a pane that has gone follows the leader. */
+function cleanFollows(
+  panels: WorkspaceState["panels"],
+  nodes: ReadonlySet<string>,
+): WorkspaceState["panels"] {
+  let next = panels;
+  for (const panel of Object.values(panels)) {
+    const follows = panel.follows;
+    if (follows !== undefined && follows !== "leader" && !nodes.has(follows.pane)) {
+      next = { ...next, [panel.id]: { ...panel, follows: "leader" } };
+    }
+  }
+  return next;
+}
+
 function leads(state: WorkspaceState, id: PanelId | null | undefined): id is PanelId {
-  return typeof id === "string" && Object.hasOwn(state.panels, id) && state.panels[id]?.leads !== false;
+  return typeof id === "string" && Object.hasOwn(state.panels, id) && canLead(state.panels[id]);
 }
 
 /** The focused panel if it can lead, else whoever led before, else the first panel that can. */

@@ -1,4 +1,4 @@
-import { allStacks, mainStacks } from "./tree.js";
+import { allStacks, canLead, mainStacks } from "./tree.js";
 import { type LayoutNode, type WorkspaceState } from "./types.js";
 
 /** Problems with a state that normalization should have removed. Empty when it is canonical. */
@@ -72,14 +72,30 @@ export function violations(state: WorkspaceState): string[] {
   if (state.maximized !== null && !main.some(({ id }) => id === state.maximized)) {
     problems.push("maximized refers to a missing main stack");
   }
-  if (state.leader !== null && state.panels[state.leader]?.leads === false) {
+  if (state.leader !== null && !canLead(state.panels[state.leader])) {
     problems.push("the leader is a panel that does not lead");
+  }
+  for (const stack of stacks) {
+    const wanted = canLead(state.panels[stack.active ?? ""]) ? stack.active : stack.lead;
+    if (stack.lead !== undefined && (!stack.panels.includes(stack.lead) || !canLead(state.panels[stack.lead]))) {
+      problems.push(`stack ${stack.id} is led by a panel that cannot lead it`);
+    } else if (stack.lead !== wanted) {
+      problems.push(`stack ${stack.id} is not led by its active panel`);
+    } else if (stack.lead === undefined && stack.panels.some((id) => canLead(state.panels[id]))) {
+      problems.push(`stack ${stack.id} has no lead although a panel in it can lead`);
+    }
+  }
+  for (const panel of Object.values(state.panels)) {
+    const follows = panel.follows;
+    if (follows !== undefined && follows !== "leader" && !stacks.some(({ id }) => id === follows.pane)) {
+      problems.push(`panel ${panel.id} follows a missing pane`);
+    }
   }
   if (state.leader !== null && !Object.hasOwn(state.panels, state.leader)) {
     problems.push("the leader refers to a missing panel");
   }
   const focused = stacks.find(({ id }) => id === state.focus)?.active;
-  if (focused && state.panels[focused]?.leads !== false && state.leader !== focused) {
+  if (focused && canLead(state.panels[focused]) && state.leader !== focused) {
     problems.push("the focused panel can lead but is not the leader");
   }
   for (const id of Object.keys(state.canvas.frames)) {

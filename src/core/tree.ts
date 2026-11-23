@@ -3,6 +3,7 @@ import {
   type EdgeSide,
   type LayoutNode,
   type NodeId,
+  type PanelDescriptor,
   type PanelId,
   type SplitNode,
   type StackNode,
@@ -51,6 +52,28 @@ export function findStack(state: WorkspaceState, id: NodeId | null): StackNode |
 
 export function stackOfPanel(state: WorkspaceState, panel: PanelId): StackNode | undefined {
   return allStacks(state).find((stack) => stack.panels.includes(panel));
+}
+
+/** Whether focusing a panel makes it the leader: not a follower, and not told otherwise. */
+export function canLead(panel: PanelDescriptor | null | undefined): boolean {
+  return Boolean(panel) && panel?.leads !== false && panel?.follows === undefined;
+}
+
+/** The panel that followers of a pane are about, or null when nothing in it can lead. */
+export function paneLeader(state: WorkspaceState, stack: NodeId): PanelId | null {
+  return findStack(state, stack)?.lead ?? null;
+}
+
+/**
+ * The panel a follower is about right now: the leader, or the one leading the pane it
+ * follows. Null for a panel that follows nothing, and when there is nobody to follow.
+ */
+export function subjectOf(state: WorkspaceState, panel: PanelId): PanelId | null {
+  const follows = state.panels[panel]?.follows;
+  if (follows === undefined) {
+    return null;
+  }
+  return follows === "leader" ? state.leader : paneLeader(state, follows.pane);
 }
 
 /** The edge a stack belongs to, or null for a main-area stack. */

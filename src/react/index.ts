@@ -1,6 +1,7 @@
 export {
   Workspace,
   type PanelInfo,
+  type PanelZoom,
   type StackInfo,
   type TabInfo,
   type WorkspaceLabels,
@@ -8,4 +9,4 @@ export {
 } from "./Workspace.js";
 export { type MenuItem } from "./Menu.js";
 export { type FlipOptions } from "./flip.js";
-export { useLeader, useWorkspaceState } from "./hooks.js";
+export { useLeader, useSubject, useWorkspaceState } from "./hooks.js";

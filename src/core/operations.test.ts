@@ -1,6 +1,7 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 
+import { arrangementOf, compose, parseArrangement, parseWindowState, windowOf } from "./arrangement.js";
 import { violations } from "./invariants.js";
 import { computeLayout } from "./layout.js";
 import { normalize } from "./normalize.js";
@@ -259,6 +260,15 @@ const operation: fc.Arbitrary<Operation> = fc.oneof(
   fc.record({ type: fc.constant("activate" as const), panel: anyPanel }),
   fc.record({ type: fc.constant("focus" as const), stack: stackId }),
   fc.record({ type: fc.constant("lead" as const), panel: anyPanel }),
+  fc.record({
+    type: fc.constant("follow" as const),
+    panel: anyPanel,
+    follows: fc.oneof(
+      fc.constant(null),
+      fc.constant("leader" as const),
+      stackId.map((pane) => ({ pane })),
+    ),
+  }),
   fc.record({ type: fc.constant("maximize" as const), stack: fc.option(stackId, { nil: null }) }),
   fc.record({ type: fc.constant("resize" as const), split: stackId, sizes: fc.array(fc.double({ min: -1, max: 5, noNaN: true }), { maxLength: 4 }) }),
   fc.record({
@@ -305,6 +315,40 @@ describe("any sequence of operations", () => {
         const state = run(operations);
         expect(normalize(state)).toBe(state);
         expect(fromSnapshot(JSON.parse(JSON.stringify(toSnapshot(state))))).toEqual(state);
+      }),
+      { numRuns: 300 },
+    );
+  });
+
+  it("is the same state again after being split into arrangement and window state", () => {
+    const json = (value: unknown): unknown => JSON.parse(JSON.stringify(value));
+    fc.assert(
+      fc.property(fc.array(operation, { maxLength: 30 }), (operations) => {
+        const state = run(operations);
+        const again = compose(
+          parseArrangement(json(arrangementOf(state))),
+          parseWindowState(json(windowOf(state))),
+        );
+        expect(violations(again)).toEqual([]);
+        // Layers are kept as an order, so only the order of the frames has to survive.
+        const order = (from: WorkspaceState): string[] =>
+          Object.entries(from.canvas.frames)
+            .sort(([, a], [, b]) => a.z - b.z)
+            .map(([id]) => id);
+        const flat = (from: WorkspaceState): WorkspaceState => ({
+          ...from,
+          canvas: {
+            ...from.canvas,
+            frames: Object.fromEntries(
+              Object.entries(from.canvas.frames).map(([id, frame]) => [id, { ...frame, z: 0 }]),
+            ),
+          },
+        });
+        expect(flat(again)).toEqual(flat(state));
+        const tied = new Set(Object.values(state.canvas.frames).map(({ z }) => z)).size !== order(state).length;
+        if (!tied) {
+          expect(order(again)).toEqual(order(state));
+        }
       }),
       { numRuns: 300 },
     );

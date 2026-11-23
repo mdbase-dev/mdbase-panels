@@ -39,10 +39,13 @@ export function towardsActualSize(from: number, to: number, within = 0.04): numb
 }
 
 export function clampCamera(camera: Camera): Camera {
-  const x = Number.isFinite(camera.x) ? camera.x : 0;
-  const y = Number.isFinite(camera.y) ? camera.y : 0;
+  // Adding zero turns a negative zero into zero: a camera has to survive being written as JSON.
+  const x = Number.isFinite(camera.x) ? camera.x + 0 : 0;
+  const y = Number.isFinite(camera.y) ? camera.y + 0 : 0;
   const zoom = clampZoom(camera.zoom);
-  return x === camera.x && y === camera.y && zoom === camera.zoom ? camera : { x, y, zoom };
+  return Object.is(x, camera.x) && Object.is(y, camera.y) && zoom === camera.zoom
+    ? camera
+    : { x, y, zoom };
 }
 
 export function sameCamera(a: Camera, b: Camera): boolean {

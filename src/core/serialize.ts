@@ -83,7 +83,15 @@ function parsePanel(value: unknown, id: string): PanelDescriptor {
     ...(isSize(value["minWidth"]) ? { minWidth: value["minWidth"] } : {}),
     ...(isSize(value["minHeight"]) ? { minHeight: value["minHeight"] } : {}),
     ...(typeof value["leads"] === "boolean" ? { leads: value["leads"] } : {}),
+    ...parseFollows(value["follows"]),
   };
+}
+
+function parseFollows(value: unknown): Pick<PanelDescriptor, "follows"> {
+  if (value === "leader") {
+    return { follows: "leader" };
+  }
+  return isRecord(value) && typeof value["pane"] === "string" ? { follows: { pane: value["pane"] } } : {};
 }
 
 function parseData(value: unknown, depth: number): PanelData {
@@ -129,6 +137,7 @@ function parseStack(value: unknown): StackNode {
     id: value["id"],
     panels: value["panels"],
     active: typeof value["active"] === "string" ? value["active"] : null,
+    ...(typeof value["lead"] === "string" ? { lead: value["lead"] } : {}),
   };
 }
 

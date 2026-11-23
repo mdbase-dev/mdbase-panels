@@ -53,9 +53,25 @@ import {
 import { defaultFlip, flip, prefersReducedMotion, type FlipOptions, type Visual } from "./flip.js";
 import { Menu, type MenuItem, type MenuState } from "./Menu.js";
 
+/**
+ * How a panel is shown on a canvas that is not at actual size.
+ * - `picture`: drawn through the canvas's scale and covered, so it can be arranged but not
+ *   used. The default, and right for anything that measures itself against the screen.
+ * - `scaled`: drawn through the canvas's scale and live. For content that never compares its
+ *   own layout with screen positions.
+ * - `native`: laid out at the size it has on screen and told the zoom (`PanelInfo.zoom`), so
+ *   that it draws itself at that zoom. Nothing scales it, so everything in it measures true.
+ */
+export type PanelZoom = "picture" | "scaled" | "native";
+
 export interface PanelInfo {
   /** Whether the panel is on screen. Hidden panels stay mounted. */
   readonly visible: boolean;
+  /**
+   * The zoom a `native` panel should draw itself at: the canvas's, once a zoom gesture has
+   * settled. 1 everywhere else.
+   */
+  readonly zoom: number;
   /** Whether it is the active panel of the focused stack. */
   readonly focused: boolean;
   readonly stack: NodeId;
@@ -125,6 +141,8 @@ export interface WorkspaceProps {
   /** Shown in the main area when nothing is open there. */
   readonly renderEmpty?: () => ReactNode;
   readonly tabMenu?: (panel: PanelDescriptor, info: TabInfo) => readonly MenuItem[];
+  /** How each panel is shown on a zoomed canvas. Defaults to `picture` for every panel. */
+  readonly zoom?: (panel: PanelDescriptor) => PanelZoom;
   /** A tab's accessible name and tooltip. Defaults to its title. */
   readonly tabTitle?: (panel: PanelDescriptor) => string;
   /**
@@ -288,6 +306,9 @@ export function Workspace(props: WorkspaceProps): JSX.Element {
   const cameraTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const layoutRef = useRef(layout);
   layoutRef.current = layout;
+  /** The zoom the state holds: what `native` panels are laid out for. */
+  const settledZoom = useRef(state.canvas.camera.zoom);
+  settledZoom.current = state.canvas.camera.zoom;
   const motion = props.motion;
   const paint = useCallback((): void => {
     const element = content.current;
@@ -303,6 +324,8 @@ export function Workspace(props: WorkspaceProps): JSX.Element {
     // At actual size the plane sits on whole pixels, so text in a pane stays sharp.
     const place = (value: number): number => (zoom === 1 ? Math.round(value) : value);
     root.current?.toggleAttribute("data-mp-zoomed", zoom !== 1);
+    // Mid-gesture a native panel is still laid out for the zoom before, and so is scaled.
+    root.current?.toggleAttribute("data-mp-zooming", zoom !== settledZoom.current);
     element.style.setProperty("--mp-zoom", String(zoom));
     element.style.setProperty("--mp-cam-x", `${String(place(main.x - x * zoom))}px`);
     element.style.setProperty("--mp-cam-y", `${String(place(main.y - y * zoom))}px`);
@@ -743,6 +766,10 @@ export function Workspace(props: WorkspaceProps): JSX.Element {
     (layout?.stacks ?? []).flatMap(({ id }) => findStack(state, id)?.panels ?? []),
   );
   const empty = layout && mode !== "overview" && !layout.stacks.some(({ edge }) => !edge) && !state.root;
+  const zoomOf = props.zoom;
+  const zoomKind = (panel: PanelDescriptor | undefined): PanelZoom =>
+    (panel && zoomOf?.(panel)) ?? "picture";
+  const canvasZoom = mode === "canvas" ? state.canvas.camera.zoom : 1;
 
   return (
     <div
@@ -813,6 +840,7 @@ export function Workspace(props: WorkspaceProps): JSX.Element {
                       focused={placed.visible && state.focus === placed.stack}
                       edge={stack?.edge ?? edgeOfStack(state, placed.stack)}
                       domId={panelDomId(id)}
+                      zoom={!placed.pinned && zoomKind(panel) === "native" ? canvasZoom : 1}
                       labelledBy={tabbed.has(id) ? tabId(id) : undefined}
                       label={titleOf(panel)}
                       renderPanel={props.renderPanel}
@@ -833,19 +861,26 @@ export function Workspace(props: WorkspaceProps): JSX.Element {
                   <Pin key={`frame:${stack.id}`} pinned={false} layer={stack.layer}>
                     {/*
                       A pane that is not in use is covered: a click picks it, a drag or the wheel
-                      moves the canvas, and nothing inside it can swallow either. The pane in use
-                      is covered too unless the canvas is at actual size (see the stylesheet).
+                      moves the canvas, and nothing inside it can swallow either. Away from
+                      actual size the pane in use is covered too, unless its panel says it can
+                      be used zoomed (see the stylesheet).
                     */}
                     <div
                       className="mp-cover"
                       data-mp-focused={stack.focused || undefined}
+                      data-mp-zoom={zoomKind(state.panels[findStack(state, stack.id)?.active ?? ""])}
                       style={rectStyle(stack.body)}
-                      onPointerDown={(event) =>
+                      onPointerDown={(event) => {
+                        const cover = event.currentTarget;
                         beginPan(event, () => {
                           canvasPress.current = performance.now();
+                          // Picking a pane uncovers it. The cover stays for the length of a
+                          // double click, so that the second click is not taken by the content.
+                          cover.setAttribute("data-mp-picked", "");
+                          window.setTimeout(() => cover.removeAttribute("data-mp-picked"), 400);
                           store.dispatch({ type: "focus", stack: stack.id }, { animate: false });
-                        })
-                      }
+                        });
+                      }}
                       onDoubleClick={() => zoomTo(stack)}
                     />
                     <div className="mp-frame-handles" style={rectStyle(stack.rect)} aria-hidden="true">
@@ -981,6 +1016,8 @@ interface PanelHostProps {
   readonly focused: boolean;
   readonly edge: EdgeSide | null;
   readonly domId: string;
+  /** The zoom the panel lays itself out for; 1 unless it is `native` on a zoomed canvas. */
+  readonly zoom: number;
   readonly labelledBy: string | undefined;
   readonly label: string;
   readonly renderPanel: WorkspaceProps["renderPanel"];
@@ -1003,21 +1040,40 @@ const PanelHost = memo(function PanelHost(props: PanelHostProps): JSX.Element {
       data-mp-visible={layout.visible || undefined}
       data-mp-focused={props.focused || undefined}
       data-mp-edge={props.edge ?? undefined}
+      data-mp-native={props.zoom === 1 ? undefined : ""}
       inert={!interactive}
       style={{
         ...rectStyle(layout.rect),
         transform: layout.scale === 1 ? undefined : `scale(${String(layout.scale)})`,
       }}
     >
-      <PanelContent
-        panel={panel}
-        visible={layout.visible}
-        focused={props.focused}
-        stack={layout.stack}
-        edge={props.edge}
-        mode={mode}
-        renderPanel={props.renderPanel}
-      />
+      {/*
+        A native panel is laid out at its size on screen and scaled back to fit its box, so
+        that the canvas's scale and this one cancel: its content is never drawn through a scale.
+      */}
+      <div
+        className="mp-panel-body"
+        style={
+          props.zoom === 1
+            ? undefined
+            : {
+                width: layout.rect.width * props.zoom,
+                height: layout.rect.height * props.zoom,
+                transform: `scale(${String(1 / props.zoom)})`,
+              }
+        }
+      >
+        <PanelContent
+          panel={panel}
+          visible={layout.visible}
+          zoom={props.zoom}
+          focused={props.focused}
+          stack={layout.stack}
+          edge={props.edge}
+          mode={mode}
+          renderPanel={props.renderPanel}
+        />
+      </div>
     </div>
   );
 });

@@ -84,14 +84,29 @@ it. `hiddenEdges` leaves regions out of one layout without touching the state, a
 names the region that should be the last to give way, which an app sets to the one the user
 asked for most recently. `layout.yielded` lists the regions that gave way.
 
-### The leader
+### The leader and followers
 
 `state.leader` is the active panel of the focused stack whenever that panel can lead, and
-otherwise stays what it was. Closing the leader hands over to the tab that takes its place. Give
-panels that are *about* another panel `leads: false`, and read the leader with `useLeader(store)`
-(or from the state). When the focused panel does not lead, `{ type: "lead", panel }` names the
-leader: a panel that has just been made a follower uses it to say which panel it follows. What a follower shows, and whether a particular follower is following at
-the moment, is the app's business: a pinned follower can simply keep the panel it was showing.
+otherwise stays what it was. Closing the leader hands over to the tab that takes its place.
+Every stack also has a `lead` of its own: its active panel when that one can lead, else the
+panel in it that last did.
+
+A follower is a panel that is *about* another panel: an outline, an inspector, a list of
+annotations. Give it `follows`:
+
+```ts
+{ id: "outline", kind: "outline", follows: "leader" }          // the panel used last, anywhere
+{ id: "notes", kind: "notes", follows: { pane: "n4" } }        // the panel leading one pane
+store.dispatch({ type: "follow", panel: "notes", follows: { pane: stack.id } });
+store.dispatch({ type: "follow", panel: "notes", follows: null }); // an ordinary panel again
+```
+
+`subjectOf(state, panel)` (or `useSubject(store, panel)`) says which panel a follower is about
+right now. What it shows about that panel is the app's business. A follower never leads, so
+using it does not change what it is about, and a follower of a pane that has gone follows the
+leader. A panel that is about others without following any one of them (a list of sources,
+say) takes `leads: false` instead. When the focused panel does not lead, `{ type: "lead",
+panel }` names the leader.
 
 ### The canvas
 
@@ -127,6 +142,7 @@ store.dispatch({ type: "setView", view: "columns" });
 | `move`, `moveStack` | Put a panel, or a whole stack of them, somewhere else |
 | `activate`, `focus` | Show a panel; give a stack focus |
 | `lead` | Name the leader while the focused panel does not lead |
+| `follow` | Make a panel a follower, change whom it follows, or stop it following |
 | `resize`, `setColumnWidth`, `configureEdge` | Sizes of splits, columns and side regions |
 | `maximize` | One stack fills the workspace (pass `null` to restore) |
 | `setView` | `tiling`, `columns` or `canvas` |
@@ -164,6 +180,38 @@ Only the first two exist today. The snapshot is `{ format: "mdbase-panels", vers
 workspace }`. `fromSnapshot` validates and repairs what it reads and throws on anything it does
 not recognise, so a saved layout can never stop an app from starting.
 
+### Arrangement and window state
+
+A workspace is two things, and they are worth keeping apart.
+
+- The **arrangement** is what is open and where it sits: the panels, the tree of stacks, the
+  side regions and their sizes, the view, column widths and canvas frames. It is the part worth
+  keeping, and every window that shows the workspace shares it.
+- The **window state** is how one window is looking at it: which stack has focus, which tab is
+  in front in each stack, which side regions are open, what is maximized, where the canvas is
+  panned and zoomed to, which pane is in front. It changes with nearly every click.
+
+```ts
+import { WorkspaceStore, webSharedStorage } from "@mdbase-dev/panels";
+
+const store = new WorkspaceStore({ shared: webSharedStorage("my-app:workspace") });
+```
+
+With `shared` instead of `storage`, the store saves each half only when it changes.
+`webSharedStorage` keeps the arrangement in local storage, where every window on the origin
+reads it and is told when another window saves it, and the window state in session storage,
+which each window has to itself (a copy in local storage starts a new window off like the one
+used last). Two windows then show the same tabs in the same places, each with its own focus,
+front tabs, open sides and canvas position.
+
+`arrangementOf(state)` and `windowOf(state)` take a state apart, `compose(arrangement, window)`
+puts one back together (the window state may be stale or missing), and `parseArrangement` and
+`parseWindowState` read them from untrusted JSON. `store.adopt(arrangement)` takes an
+arrangement made elsewhere while keeping this window's view of it; it drops the undo history,
+whose steps would otherwise undo the other window's work. Anything else that should hold a
+workspace (an mdbase record, a file) is a `SharedStorage`: two `{ load(), save() }` pairs and
+an optional `watch`. Only the arrangement belongs in something that is synced.
+
 ## React
 
 ```tsx
@@ -190,11 +238,25 @@ for screen readers, and animation between layouts (off when the system asks for 
 
 On the canvas, the wheel pans and Ctrl or Cmd with the wheel (a trackpad pinch) zooms about the
 pointer; dragging open ground pans. The focused pane works as usual while the canvas is at actual
-size (100%). Every other pane is covered, and so is the focused one at any other zoom: a click
-picks a pane, a double click brings it to actual size, and a wheel or drag over it moves the canvas
-instead of being swallowed by a frame inside it. Content is never asked to work through a scale,
-so anything that measures itself (a selection toolbar, an annotation) behaves as it does in the
-other views. A zoom that reaches 100% settles there. A pane is moved by the grip at the start of its
+size (100%). Every other pane is covered: a click picks a pane, a double click brings it to
+actual size (as does a double click on the bare part of its tab strip), and a wheel or drag over
+it moves the canvas instead of being swallowed by a frame inside it. A zoom that reaches 100%
+settles there.
+
+What the focused pane does at any other zoom is up to its panel, through the `zoom` prop:
+
+```tsx
+<Workspace zoom={(panel) => (panel.kind === "doc" ? "native" : "scaled")} … />
+```
+
+| `zoom` | On a zoomed canvas |
+| --- | --- |
+| `picture` (default) | Drawn through the canvas's scale and covered: it can be arranged, not used. |
+| `scaled` | Drawn through the scale and live. For content that never compares its own layout with positions on screen. |
+| `native` | Laid out at the size it has on screen, and given the zoom as `info.zoom` so that it draws itself at it (bigger text, a page fitted to the width). Nothing scales its content, so whatever measures itself (a selection toolbar, an annotation) behaves as it does anywhere else. |
+
+A `native` panel is laid out again when a zoom gesture settles, not on every step of it; in
+between it is a picture. A pane is moved by the grip at the start of its
 tab strip (or any bare part of the strip; arrow keys on the grip move it, with Shift they resize
 it) and resized from its sides and corners. Dragging a tab onto open ground gives it a pane of
 its own. Panning and zooming change one transform per pane and lay nothing out again; the camera
@@ -214,10 +276,12 @@ every stack, panel and splitter, `dropTargetAt` says where a dragged panel would
   minimap, lines or groups between panes, and export to a canvas file format.
 - Dropping a tab on a side region that is empty or hidden. Use a `move` operation (a menu item).
 - A general constraint solver. Sizes use minimums, maximums and priorities.
-- Storage in mdbase records, and sync between devices or people.
+- Storage in mdbase records, and sync between devices or people. The arrangement is the half
+  to put there; see "Arrangement and window state".
 - Workspaces shared between apps. `PanelDescriptor.app` and the opaque `data` are there so a
   workspace can hold panels of several apps; nothing reads them yet.
-- Pop-out windows.
+- Pop-out windows. Two ordinary windows already share an arrangement; a window that shows only
+  part of one does not exist.
 
 ## Development
 

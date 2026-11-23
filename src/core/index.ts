@@ -1,6 +1,7 @@
 export * from "./types.js";
 export {
   allStacks,
+  canLead,
   edgeOfStack,
   edgeStacks,
   emptyWorkspace,
@@ -8,9 +9,21 @@ export {
   findStack,
   isMainStack,
   mainStacks,
+  paneLeader,
   parentOf,
   stackOfPanel,
+  subjectOf,
 } from "./tree.js";
+export {
+  arrangementOf,
+  compose,
+  parseArrangement,
+  parseWindowState,
+  sameArrangement,
+  windowOf,
+  type Arrangement,
+  type WindowState,
+} from "./arrangement.js";
 export { normalize, columnFractionRange } from "./normalize.js";
 export {
   boundsOf,
@@ -46,10 +59,12 @@ export { dropTargetAt, type DropOptions, type DropTarget } from "./drop.js";
 export { fromSnapshot, toSnapshot, type WorkspaceSnapshot } from "./serialize.js";
 export {
   memoryStorage,
+  webSharedStorage,
   webStorage,
   WorkspaceStore,
   type DispatchOptions,
   type Rebase,
+  type SharedStorage,
   type StoreOptions,
   type WorkspaceChange,
   type WorkspaceStorage,

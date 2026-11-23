@@ -1,6 +1,7 @@
 import { boundsOf, canvasDefaults, clampCamera, frameBeside } from "./canvas.js";
 import { columnFractionRange, normalize } from "./normalize.js";
 import {
+  canLead,
   edgeOfStack,
   findNode,
   findStack,
@@ -94,9 +95,18 @@ function reduce(state: WorkspaceState, operation: Operation): WorkspaceState {
       return focusStack(state, operation.stack);
     case "lead": {
       const panel = state.panels[operation.panel];
-      return panel && panel.leads !== false && state.leader !== panel.id
+      return panel && canLead(panel) && state.leader !== panel.id
         ? { ...state, leader: panel.id }
         : state;
+    }
+    case "follow": {
+      const panel = state.panels[operation.panel];
+      if (!panel) {
+        return state;
+      }
+      const { follows: _was, ...rest } = panel;
+      const next = operation.follows === null ? rest : { ...rest, follows: operation.follows };
+      return { ...state, panels: { ...state.panels, [panel.id]: next } };
     }
     case "update": {
       const panel = state.panels[operation.panel];
@@ -265,8 +275,9 @@ function sameRect(a: Rect, b: Rect): boolean {
 /** A rect that is at least as big as the smallest frame. */
 function sized(rect: Rect): Rect {
   return {
-    x: rect.x,
-    y: rect.y,
+    // Adding zero turns a negative zero into zero, which is what JSON would make of it.
+    x: rect.x + 0,
+    y: rect.y + 0,
     width: Math.max(canvasDefaults.minFrame.width, rect.width),
     height: Math.max(canvasDefaults.minFrame.height, rect.height),
   };

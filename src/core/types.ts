@@ -28,6 +28,12 @@ export type PanelData =
   | readonly PanelData[]
   | { readonly [key: string]: PanelData };
 
+/**
+ * Whom a panel is about: the workspace's leader, or the panel that leads one pane (see
+ * `StackNode.lead`). A panel that follows a pane which has gone follows the leader instead.
+ */
+export type Follow = "leader" | { readonly pane: NodeId };
+
 export interface PanelDescriptor {
   /** Stable for the panel's whole life; independent of where it is placed. */
   readonly id: PanelId;
@@ -46,6 +52,12 @@ export interface PanelDescriptor {
    * as an outline or an inspector, so that using them does not change what they are about.
    */
   readonly leads?: boolean;
+  /**
+   * Makes this a follower: a panel that shows something about another panel, such as an
+   * outline or an inspector. `subjectOf` says which panel that is right now; what to show
+   * about it is up to the app. A follower never leads, whatever `leads` says.
+   */
+  readonly follows?: Follow;
 }
 
 export interface StackNode {
@@ -54,6 +66,11 @@ export interface StackNode {
   /** Tab order. */
   readonly panels: readonly PanelId[];
   readonly active: PanelId | null;
+  /**
+   * The panel that followers of this pane are about: its active panel when that one can lead,
+   * else the one here that last did. Absent when nothing here can lead. Kept by normalization.
+   */
+  readonly lead?: PanelId;
 }
 
 export interface SplitNode {
@@ -204,6 +221,8 @@ export type Operation =
    * follower says which panel it follows. Ignored for a panel that cannot lead.
    */
   | { readonly type: "lead"; readonly panel: PanelId }
+  /** Make a panel a follower, change whom it follows, or (with null) let it stand alone again. */
+  | { readonly type: "follow"; readonly panel: PanelId; readonly follows: Follow | null }
   | {
       readonly type: "update";
       readonly panel: PanelId;
