@@ -1,6 +1,6 @@
 {
   "name": "@mdbase-dev/panels",
-  "version": "0.3.1",
+  "version": "0.4.0",
   "description": "A workspace of panels for the web: tabs, splits and side regions over a layout document, with panels that keep their identity.",
   "license": "MIT",
   "repository": {
