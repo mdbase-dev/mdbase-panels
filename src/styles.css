@@ -1,8 +1,9 @@
 /*
- * Theme with custom properties on .mp-workspace or any ancestor. Every colour has a default
- * for light and dark, so the workspace is usable unstyled.
+ * Theme with custom properties on .mp-workspace or any ancestor. The defaults sit on the root
+ * with no specificity, so a value set anywhere above the workspace wins over them. Each colour
+ * has a light and a dark default, chosen by the page's color-scheme.
  */
-.mp-workspace {
+:where(:root) {
   --mp-bg: light-dark(#f4f4f2, #18181a);
   --mp-surface: light-dark(#ffffff, #202023);
   --mp-header-bg: light-dark(#ececea, #1b1b1e);
@@ -11,13 +12,14 @@
   --mp-muted: light-dark(#6b6b70, #9a9aa2);
   --mp-accent: light-dark(#2f6fde, #7aa7ff);
   --mp-tab-hover: light-dark(rgb(0 0 0 / 5%), rgb(255 255 255 / 6%));
-  --mp-drop: color-mix(in srgb, var(--mp-accent) 22%, transparent);
   --mp-shadow: 0 8px 28px rgb(0 0 0 / 22%);
   --mp-radius: 6px;
   --mp-font: inherit;
   --mp-tab-max-width: 220px;
   --mp-splitter-hit: 9px;
+}
 
+.mp-workspace {
   position: relative;
   width: 100%;
   height: 100%;
@@ -27,7 +29,6 @@
   background: var(--mp-bg);
   color: var(--mp-text);
   font: var(--mp-font);
-  color-scheme: light dark;
   isolation: isolate;
 }
 
@@ -209,7 +210,8 @@
   z-index: 4;
   border: 2px solid var(--mp-accent);
   border-radius: var(--mp-radius);
-  background: var(--mp-drop);
+  /* Derived here rather than on the root, so it follows an --mp-accent set further down. */
+  background: var(--mp-drop, color-mix(in srgb, var(--mp-accent) 22%, transparent));
   pointer-events: none;
   transition:
     left 90ms ease-out,

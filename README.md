@@ -181,7 +181,8 @@ for screen readers, and animation between layouts (off when the system asks for 
 
 Colours and sizes come from custom properties (`--mp-bg`, `--mp-surface`, `--mp-header-bg`,
 `--mp-border`, `--mp-text`, `--mp-muted`, `--mp-accent`, `--mp-drop`, and so on) set on
-`.mp-workspace` or any ancestor.
+`.mp-workspace` or any ancestor. The default colours follow the page's `color-scheme`: set
+`color-scheme: light dark` on the root to follow the system, or `light` or `dark` to fix it.
 
 The core can be used without React: `computeLayout(state, size, options)` returns rectangles for
 every stack, panel and splitter, `dropTargetAt` says where a dragged panel would land, and
